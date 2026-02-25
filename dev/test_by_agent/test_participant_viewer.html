@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LiveKit HLS 동기화 테스트 - 참가자 뷰어</title>
+  <script src="https://unpkg.com/livekit-client@2.12.0/dist/livekit-client.umd.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 1rem; background: #1a1a2e; color: #eee; }
+    .container { max-width: 900px; margin: 0 auto; }
+    h1 { font-size: 1.2rem; }
+    #video-container { background: #000; border-radius: 8px; overflow: hidden; margin: 1rem 0; min-height: 360px; position: relative; }
+    #video-container video { width: 100%; display: block; }
+    #status { padding: 0.5rem; background: #16213e; border-radius: 6px; font-size: 0.9rem; margin-bottom: 1rem; }
+    #status.connected { border-left: 4px solid #4ade80; }
+    #status.error { border-left: 4px solid #f87171; }
+    .params { margin: 1rem 0; padding: 1rem; background: #0f3460; border-radius: 6px; }
+    .params label { display: block; margin: 0.5rem 0; }
+    .params input { width: 100%; padding: 0.5rem; margin-top: 0.25rem; }
+    button { padding: 0.5rem 1rem; background: #4ade80; color: #000; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; }
+    button:hover { background: #22c55e; }
+    button:disabled { background: #666; cursor: not-allowed; }
+    .tracks-info { font-size: 0.85rem; color: #94a3b8; margin-top: 0.5rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🎬 LiveKit HLS 동기화 테스트 - 참가자 뷰어</h1>
+    <p>토큰과 LiveKit URL로 Room에 접속하여 Ingress 영상/오디오를 수신합니다.</p>
+
+    <div class="params">
+      <label>LiveKit WebSocket URL (wss:// 또는 ws://)</label>
+      <input type="text" id="wsUrl" placeholder="wss://localhost:7880" />
+      <label>JWT Token</label>
+      <input type="text" id="token" placeholder="eyJhbGciOiJIUzI1NiIs..." />
+      <button id="connectBtn" onclick="connect()">접속</button>
+      <button id="disconnectBtn" onclick="disconnect()" disabled>접속 해제</button>
+    </div>
+
+    <div id="status">토큰과 URL을 입력한 뒤 접속 버튼을 누르세요.</div>
+    <div id="video-container"></div>
+    <div class="tracks-info" id="tracksInfo"></div>
+  </div>
+
+  <script>
+    const { Room, RoomEvent, Track } = window.LivekitClient || {};
+    let room = null;
+
+    // URL 파라미터에서 token, url 가져오기
+    const params = new URLSearchParams(window.location.search);
+    const urlToken = params.get('token');
+    const urlWs = params.get('url') || params.get('ws_url') || params.get('wsUrl');
+    if (urlToken) document.getElementById('token').value = urlToken;
+    if (urlWs) document.getElementById('wsUrl').value = urlWs;
+
+    function setStatus(msg, isError = false) {
+      const el = document.getElementById('status');
+      el.textContent = msg;
+      el.className = isError ? 'error' : 'connected';
+    }
+
+    function updateTracksInfo() {
+      if (!room) return;
+      const participants = Array.from(room.remoteParticipants.values());
+      const tracks = participants.flatMap(p => Array.from(p.trackPublications.values()));
+      document.getElementById('tracksInfo').textContent =
+        `참가자: ${participants.length}명 | 트랙: ${tracks.length}개 (비디오: ${tracks.filter(t => t.kind === 'video').length}, 오디오: ${tracks.filter(t => t.kind === 'audio').length})`;
+    }
+
+    async function connect() {
+      const wsUrl = document.getElementById('wsUrl').value.trim();
+      const token = document.getElementById('token').value.trim();
+      if (!wsUrl || !token) {
+        setStatus('URL과 토큰을 입력해주세요.', true);
+        return;
+      }
+
+      setStatus('접속 중...');
+      document.getElementById('connectBtn').disabled = true;
+
+      try {
+        room = new Room({
+          adaptiveStream: true,
+          dynacast: true,
+          autoSubscribe: true,
+        });
+
+        room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+          setStatus(`연결됨 | ${participant.identity}의 트랙 구독: ${track.kind}`);
+          const container = document.getElementById('video-container');
+          if (track.kind === Track.Kind.Video) {
+            const element = track.attach();
+            element.style.width = '100%';
+            container.appendChild(element);
+          } else if (track.kind === Track.Kind.Audio) {
+            const element = track.attach();
+            document.body.appendChild(element);
+          }
+          updateTracksInfo();
+        });
+
+        room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
+          track.detach().forEach(el => el.remove());
+          updateTracksInfo();
+        });
+
+        room.on(RoomEvent.Disconnected, () => {
+          setStatus('연결 해제됨');
+          document.getElementById('connectBtn').disabled = false;
+          document.getElementById('disconnectBtn').disabled = true;
+          document.getElementById('video-container').innerHTML = '';
+          updateTracksInfo();
+        });
+
+        room.on(RoomEvent.Connected, () => {
+          setStatus(`연결됨 | Room: ${room.name} | 로컬: ${room.localParticipant.identity}`);
+          document.getElementById('disconnectBtn').disabled = false;
+          updateTracksInfo();
+        });
+
+        await room.connect(wsUrl, token);
+      } catch (err) {
+        setStatus(`오류: ${err.message}`, true);
+        document.getElementById('connectBtn').disabled = false;
+        console.error(err);
+      }
+    }
+
+    function disconnect() {
+      if (room) {
+        room.disconnect();
+        room = null;
+      }
+    }
+  </script>
+</body>
+</html>

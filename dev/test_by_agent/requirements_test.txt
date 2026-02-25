@@ -1,0 +1,4 @@
+# HLS 멀티 참가자 동기화 테스트용 의존성
+# 사용: pip install -r requirements_test.txt
+livekit-api>=1.0.0
+python-dotenv>=1.0.0

@@ -1,0 +1,20 @@
+# Webfos Backend Dependencies
+
+# FastAPI
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# LiveKit
+livekit-api>=0.5.0
+livekit-agents>=1.0.0
+
+# HTTP Client
+httpx>=0.24.0
+
+# Environment
+python-dotenv>=1.0.0
+
+# Logging
+loguru>=0.7.0

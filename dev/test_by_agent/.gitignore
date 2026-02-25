@@ -1,0 +1,4 @@
+# 환경변수 (민감 정보)
+.env
+backend/.env
+hls-viewer/.env

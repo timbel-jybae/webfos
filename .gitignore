@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.venv/
+venv/
+
+# Environment
+.env
+*.env.local
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Build
+src/webfos_frontend/dist/
+dev/test_by_agent/hls-viewer/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Cursor
+.cursor/

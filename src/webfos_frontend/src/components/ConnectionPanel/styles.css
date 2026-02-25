@@ -1,0 +1,94 @@
+.connection-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+  background: #1e293b;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.status-connected .status-dot {
+  background: #4ade80;
+}
+
+.status-connecting .status-dot {
+  background: #fbbf24;
+  animation: pulse 1s infinite;
+}
+
+.status-disconnected .status-dot {
+  background: #ef4444;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.button-group {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.btn-connect,
+.btn-disconnect,
+.btn-audio {
+  padding: 0.6rem 1.2rem;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.btn-connect {
+  background: #4ade80;
+  color: #000;
+}
+
+.btn-connect:hover {
+  background: #22c55e;
+}
+
+.btn-connect:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-disconnect {
+  background: #ef4444;
+  color: #fff;
+}
+
+.btn-disconnect:hover {
+  background: #dc2626;
+}
+
+.btn-audio {
+  background: #3b82f6;
+  color: #fff;
+}
+
+.btn-audio:hover {
+  background: #2563eb;
+}
+
+.participants-info {
+  font-size: 0.85rem;
+  color: #94a3b8;
+}

@@ -1,0 +1,5 @@
+# [advice from AI] LiveKit 지연 Agent 의존성
+livekit>=1.0.0
+livekit-api>=1.0.0
+python-dotenv>=1.0.0
+aiohttp>=3.8.0

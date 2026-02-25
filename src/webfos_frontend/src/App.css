@@ -1,0 +1,325 @@
+/* Webfos Frontend Styles */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #0f172a;
+  color: #e2e8f0;
+  min-height: 100vh;
+}
+
+.app {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+h1 {
+  font-size: 1.5rem;
+  margin-bottom: 0.5rem;
+  color: #f8fafc;
+}
+
+.subtitle {
+  color: #94a3b8;
+  font-size: 0.9rem;
+  margin-bottom: 1.5rem;
+}
+
+/* 준비 섹션 */
+.prepare-section {
+  text-align: center;
+  padding: 2rem;
+}
+
+.prepare-section button {
+  padding: 1rem 2rem;
+  font-size: 1.1rem;
+  background: #4ade80;
+  color: #000;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.prepare-section button:hover {
+  background: #22c55e;
+}
+
+.prepare-section button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.error {
+  color: #ef4444;
+  margin-top: 1rem;
+}
+
+/* 참가자 섹션 */
+.participants-section {
+  background: #1e293b;
+  border-radius: 8px;
+  padding: 1.5rem;
+}
+
+.status-text {
+  margin-bottom: 1rem;
+  color: #94a3b8;
+}
+
+.participant-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.participant-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  background: #0f172a;
+  border-radius: 6px;
+}
+
+.participant-row.reviewer {
+  background: #1e3a5f;
+  border: 1px solid #3b82f6;
+}
+
+.participant-row span {
+  font-weight: 500;
+}
+
+.participant-row button {
+  padding: 0.5rem 1rem;
+  background: #3b82f6;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.participant-row button:hover {
+  background: #2563eb;
+}
+
+.participant-row button + button {
+  background: #475569;
+  margin-left: 0.5rem;
+}
+
+.participant-row button + button:hover {
+  background: #64748b;
+}
+
+/* 연결된 뷰 */
+.connected-view {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.channel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.channel-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.btn-disconnect {
+  background: #ef4444;
+  color: #fff;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.btn-disconnect:hover {
+  background: #dc2626;
+}
+
+/* 연결 패널 */
+.connect-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.5rem;
+  background: #1e293b;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.connect-panel .btn-connect {
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  background: #4ade80;
+  color: #000;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.connect-panel .btn-connect:hover {
+  background: #22c55e;
+}
+
+/* 정보 배너 */
+.info-banner {
+  padding: 0.75rem 1rem;
+  background: #065f46;
+  color: #d1fae5;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  margin-bottom: 1rem;
+}
+
+/* 채널 목록 */
+.channel-name {
+  text-align: center;
+  font-size: 1rem;
+  color: #4ade80;
+  margin-bottom: 1.5rem;
+}
+
+.channel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.channel-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #1e293b;
+  padding: 1rem 1.25rem;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  transition: border-color 0.2s;
+}
+
+.channel-card:hover {
+  border-color: #4ade80;
+}
+
+.channel-card.inactive {
+  opacity: 0.6;
+}
+
+.channel-card.inactive:hover {
+  border-color: #334155;
+}
+
+.channel-info h3 {
+  margin: 0 0 0.25rem 0;
+  font-size: 1rem;
+  color: #f8fafc;
+}
+
+.channel-info p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #94a3b8;
+}
+
+.channel-card button {
+  background: #4ade80;
+  color: #000;
+  border: none;
+  padding: 0.5rem 1.25rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+  transition: background 0.2s;
+}
+
+.channel-card button:hover {
+  background: #22c55e;
+}
+
+.channel-card button:disabled {
+  background: #475569;
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+
+.no-channels {
+  text-align: center;
+  color: #94a3b8;
+  padding: 2rem;
+}
+
+/* 역할 선택 화면 */
+.role-selection {
+  max-width: 500px;
+  margin: 0 auto;
+}
+
+.selected-channel {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #334155;
+}
+
+.selected-channel h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.btn-back {
+  background: #475569;
+  color: #e2e8f0;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.btn-back:hover {
+  background: #64748b;
+}
+
+.role-hint {
+  text-align: center;
+  color: #94a3b8;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+
+/* 반응형 */
+@media (max-width: 600px) {
+  .app {
+    padding: 1rem;
+  }
+  
+  h1 {
+    font-size: 1.25rem;
+  }
+  
+  .participant-row {
+    flex-direction: column;
+    gap: 0.5rem;
+    text-align: center;
+  }
+}
