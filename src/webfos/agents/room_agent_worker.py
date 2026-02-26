@@ -3,7 +3,9 @@
 
 livekit-agents 프레임워크(v1.4+)를 사용하여 별도 프로세스로 실행된다.
 Ingress 생성 시 FastAPI 서버가 이 Agent를 Room에 dispatch하면,
-RoomAgent 중앙 허브가 영상 라우팅, 턴 관리, 자막 병합 등을 수행한다.
+RoomAgent 중앙 허브가 턴 관리, 자막 병합 등을 수행한다.
+
+VideoRouter 제거: 검수자용 영상 지연은 클라이언트 측에서 처리한다.
 
 실행:
     cd src/webfos
@@ -33,9 +35,6 @@ try:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from core.config import settings
     DELAY_MS = settings.AGENT_DELAY_MS
-    BUFFER_MARGIN_MS = settings.AGENT_BUFFER_MARGIN_MS
-    VIDEO_FPS = settings.AGENT_VIDEO_FPS
-    DELAYED_IDENTITY = settings.AGENT_DELAYED_IDENTITY
     AGENT_IDENTITY = settings.AGENT_IDENTITY
     TURN_DURATION_MS = settings.AGENT_TURN_DURATION_MS
     AUTO_SWITCH = settings.AGENT_TURN_AUTO_SWITCH
@@ -49,9 +48,6 @@ try:
     BROADCAST_TIMEOUT = settings.BROADCAST_OUTPUT_TIMEOUT
 except ImportError:
     DELAY_MS = 3500
-    BUFFER_MARGIN_MS = 1000
-    VIDEO_FPS = 30
-    DELAYED_IDENTITY = "room-agent-delayed"
     AGENT_IDENTITY = "room-agent"
     TURN_DURATION_MS = 30000
     AUTO_SWITCH = False
@@ -75,9 +71,10 @@ async def room_agent_session(ctx: JobContext):
     Room에 dispatch되었을 때 실행되는 엔트리포인트.
 
     [advice from AI] RoomAgent 중앙 허브를 생성하고 관리한다.
+    VideoRouter 제거 - 검수자용 영상 지연은 클라이언트 측 버퍼링(useDelayBuffer)으로 처리.
     
     1. Room에 연결 (모든 트랙 자동 구독)
-    2. RoomAgent 시작 (VideoRouter 포함)
+    2. RoomAgent 시작
     3. Room이 닫힐 때까지 대기
     4. 종료 시 RoomAgent 정리
     """
@@ -90,8 +87,6 @@ async def room_agent_session(ctx: JobContext):
     
     agent = RoomAgent(
         delay_ms=DELAY_MS,
-        buffer_margin_ms=BUFFER_MARGIN_MS,
-        fps=VIDEO_FPS,
         turn_duration_ms=TURN_DURATION_MS,
         auto_switch=AUTO_SWITCH,
         max_stenographers=MAX_STENOGRAPHERS,
@@ -108,10 +103,7 @@ async def room_agent_session(ctx: JobContext):
     _active_agents[room_name] = agent
     
     try:
-        await agent.start(
-            room=room,
-            delayed_identity=DELAYED_IDENTITY,
-        )
+        await agent.start(room=room)
         
         logger.info(
             f"[Worker] RoomAgent 시작 완료: {room_name}, "

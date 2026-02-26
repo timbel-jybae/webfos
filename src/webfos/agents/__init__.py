@@ -2,6 +2,8 @@
 RoomAgent 패키지.
 
 실시간 자막 속기 시스템의 중앙 허브 역할을 수행하는 Agent 모듈.
+
+[advice from AI] VideoRouter 제거 (클라이언트 측 버퍼링 사용)
 """
 
 from .models import (
@@ -12,7 +14,6 @@ from .models import (
     RoomMessage,
     MessageType,
 )
-from .video_router import VideoRouter, FrameRingBuffer
 from .turn_manager import TurnManager
 from .caption_manager import CaptionManager, MergedCaption
 from .external_connector import ExternalConnector
@@ -27,9 +28,6 @@ __all__ = [
     "CaptionStatus",
     "RoomMessage",
     "MessageType",
-    # 영상 라우팅
-    "VideoRouter",
-    "FrameRingBuffer",
     # 턴 관리
     "TurnManager",
     # 자막 관리

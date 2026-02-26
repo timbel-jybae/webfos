@@ -3,6 +3,8 @@ Webfos 프로젝트 설정 — Pydantic Settings 기반.
 
 환경변수 자동 로드, 타입 검증, 기본값 제공.
 모든 레이어에서 `from core.config import settings`로 참조한다.
+
+[advice from AI] VideoRouter 관련 설정 제거 (클라이언트 측 버퍼링 사용)
 """
 
 from pydantic_settings import BaseSettings
@@ -41,12 +43,9 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # === RoomAgent 설정 ===
-    # [advice from AI] RoomAgent 중앙 허브 관련 설정
     
-    # 영상 지연 설정 (VideoRouter)
+    # 영상 지연 설정 (클라이언트 측 버퍼링 참조용)
     AGENT_DELAY_MS: int = 3500              # 검수자용 영상 지연 시간 (밀리초)
-    AGENT_BUFFER_MARGIN_MS: int = 1000      # 버퍼 여유 시간 (밀리초)
-    AGENT_VIDEO_FPS: int = 30               # 비디오 프레임 레이트
     
     # 턴 관리 설정 (TurnManager)
     AGENT_TURN_DURATION_MS: int = 30000     # 기본 턴 지속 시간 (밀리초, 자동 전환 시)
@@ -67,12 +66,6 @@ class Settings(BaseSettings):
     
     # Agent Identity 설정
     AGENT_IDENTITY: str = "room-agent"      # RoomAgent identity
-    AGENT_DELAYED_IDENTITY: str = "room-agent-delayed"  # 지연 트랙 identity
-
-    @property
-    def agent_buffer_total_ms(self) -> int:
-        """VideoRouter 전체 버퍼 크기 (밀리초)"""
-        return self.AGENT_DELAY_MS + self.AGENT_BUFFER_MARGIN_MS
     
     @property
     def stt_enabled(self) -> bool:

@@ -2,14 +2,16 @@
 RoomAgent 메인 클래스.
 
 실시간 자막 속기 시스템의 중앙 허브 역할을 수행한다.
-- 영상 스트림 라우팅 (VideoRouter)
 - 턴 관리 (TurnManager)
 - 메시지 처리 (MessageHandler)
 - 자막 관리 (CaptionManager)
 - 외부 연동 (ExternalConnector)
+
+[advice from AI] VideoRouter 제거 (클라이언트 측 버퍼링 사용)
 """
 
 import asyncio
+import time
 from typing import Optional, Dict, Any, List
 from enum import Enum
 
@@ -20,7 +22,6 @@ try:
 except ImportError:
     rtc = None
 
-from .video_router import VideoRouter
 from .turn_manager import TurnManager
 from .message_handler import MessageHandler
 from .caption_manager import CaptionManager, MergedCaption
@@ -43,13 +44,12 @@ class RoomAgent:
     """
     RoomAgent 중앙 허브
     
-    채널별 Room에서 영상/자막/턴 관리를 담당하는 핵심 클래스.
+    채널별 Room에서 자막/턴 관리를 담당하는 핵심 클래스.
     
     Attributes:
         room: LiveKit Room 인스턴스
         room_name: Room 이름
         state: Agent 상태
-        video_router: 영상 라우팅 모듈
         turn_manager: 턴 관리 모듈
         caption_manager: 자막 관리 모듈
         external_connector: 외부 연동 모듈
@@ -58,9 +58,9 @@ class RoomAgent:
     Example:
         agent = RoomAgent(
             delay_ms=3500,
-            buffer_margin_ms=1000,
+            turn_duration_ms=30000,
         )
-        await agent.start(room, ingress_video, ingress_audio)
+        await agent.start(room)
         ...
         await agent.stop()
     """
@@ -70,8 +70,6 @@ class RoomAgent:
     def __init__(
         self,
         delay_ms: int = 3500,
-        buffer_margin_ms: int = 1000,
-        fps: int = 30,
         turn_duration_ms: int = 30000,
         auto_switch: bool = False,
         max_stenographers: int = 4,
@@ -86,9 +84,7 @@ class RoomAgent:
     ):
         """
         Args:
-            delay_ms: 검수자용 영상 지연 시간 (밀리초)
-            buffer_margin_ms: 버퍼 여유 시간 (밀리초)
-            fps: 비디오 프레임 레이트
+            delay_ms: 검수자용 영상 지연 시간 (밀리초, 클라이언트 측 참조용)
             turn_duration_ms: 기본 턴 지속 시간 (밀리초)
             auto_switch: 자동 턴 전환 활성화 여부
             max_stenographers: 최대 속기사 수
@@ -105,12 +101,9 @@ class RoomAgent:
         self.room_name: str = ""
         self.state: AgentState = AgentState.INITIALIZING
         self.agent_identity = agent_identity
+        self.delay_ms = delay_ms
         
-        self.video_router = VideoRouter(
-            delay_ms=delay_ms,
-            buffer_margin_ms=buffer_margin_ms,
-            fps=fps,
-        )
+        self._start_time_ms: int = 0
         
         self.turn_manager = TurnManager(
             turn_duration_ms=turn_duration_ms,
@@ -134,10 +127,6 @@ class RoomAgent:
         self.message_handler = MessageHandler(
             agent_identity=agent_identity,
         )
-        
-        self._ingress_video_track: Optional["rtc.VideoTrack"] = None
-        self._ingress_audio_track: Optional["rtc.AudioTrack"] = None
-        self._video_router_started = False
         
         self._setup_turn_callbacks()
         self._setup_caption_callbacks()
@@ -188,20 +177,17 @@ class RoomAgent:
     async def start(
         self,
         room: "rtc.Room",
-        delayed_identity: str = "room-agent-delayed",
     ) -> None:
         """
         RoomAgent 시작
         
-        Room에 연결하고, Ingress 트랙이 수신되면 VideoRouter를 시작한다.
-        
         Args:
             room: LiveKit Room 인스턴스
-            delayed_identity: 지연 트랙 identity
         """
         self.room = room
         self.room_name = room.name
         self.state = AgentState.READY
+        self._start_time_ms = int(time.time() * 1000)
         
         logger.info(f"[RoomAgent] 시작: room={self.room_name}")
         
@@ -214,11 +200,12 @@ class RoomAgent:
             caption_manager=self.caption_manager,
         )
         
-        self._setup_event_handlers(delayed_identity)
+        self._setup_event_handlers()
+        self._check_existing_participants()
         
-        self._check_existing_participants(delayed_identity)
+        self.state = AgentState.ACTIVE
     
-    def _setup_event_handlers(self, delayed_identity: str) -> None:
+    def _setup_event_handlers(self) -> None:
         """Room 이벤트 핸들러 설정"""
         
         @self.room.on("track_subscribed")
@@ -231,15 +218,6 @@ class RoomAgent:
                 f"[RoomAgent] 트랙 구독: {participant.identity} "
                 f"{track.kind} (room={self.room_name})"
             )
-            
-            if participant.identity == self.INGRESS_IDENTITY:
-                asyncio.create_task(
-                    self._handle_ingress_track(track, participant, delayed_identity)
-                )
-            else:
-                asyncio.create_task(
-                    self._handle_participant_track(track, participant)
-                )
         
         @self.room.on("track_unsubscribed")
         def on_track_unsubscribed(
@@ -251,9 +229,6 @@ class RoomAgent:
                 f"[RoomAgent] 트랙 구독 해제: {participant.identity} "
                 f"{track.kind} (room={self.room_name})"
             )
-            
-            if participant.identity == self.INGRESS_IDENTITY:
-                asyncio.create_task(self._handle_ingress_track_lost(track))
         
         @self.room.on("participant_connected")
         def on_participant_connected(participant: "rtc.RemoteParticipant"):
@@ -275,89 +250,13 @@ class RoomAgent:
                 self._unregister_participant(participant)
             )
     
-    def _check_existing_participants(self, delayed_identity: str) -> None:
-        """기존 참가자의 트랙 확인 (Agent가 나중에 입장한 경우)"""
+    def _check_existing_participants(self) -> None:
+        """기존 참가자 확인 (Agent가 나중에 입장한 경우)"""
         for participant in self.room.remote_participants.values():
             logger.info(
                 f"[RoomAgent] 기존 참가자 확인: {participant.identity}"
             )
-            
-            for publication in participant.track_publications.values():
-                if publication.track:
-                    if participant.identity == self.INGRESS_IDENTITY:
-                        asyncio.create_task(
-                            self._handle_ingress_track(
-                                publication.track,
-                                participant,
-                                delayed_identity,
-                            )
-                        )
-    
-    async def _handle_ingress_track(
-        self,
-        track: "rtc.Track",
-        participant: "rtc.RemoteParticipant",
-        delayed_identity: str,
-    ) -> None:
-        """
-        Ingress 트랙 처리
-        
-        비디오/오디오 트랙이 모두 수신되면 VideoRouter를 시작한다.
-        """
-        if isinstance(track, rtc.VideoTrack):
-            self._ingress_video_track = track
-            logger.info(f"[RoomAgent] Ingress 비디오 트랙 수신")
-        elif isinstance(track, rtc.AudioTrack):
-            self._ingress_audio_track = track
-            logger.info(f"[RoomAgent] Ingress 오디오 트랙 수신")
-        
-        if (
-            self._ingress_video_track
-            and self._ingress_audio_track
-            and not self._video_router_started
-        ):
-            logger.info("[RoomAgent] Ingress 트랙 준비 완료, VideoRouter 시작")
-            
-            try:
-                await self.video_router.start(
-                    room=self.room,
-                    ingress_video_track=self._ingress_video_track,
-                    ingress_audio_track=self._ingress_audio_track,
-                    delayed_identity=delayed_identity,
-                )
-                self._video_router_started = True
-                self.state = AgentState.ACTIVE
-                logger.info("[RoomAgent] VideoRouter 시작 완료")
-            except Exception as e:
-                logger.error(f"[RoomAgent] VideoRouter 시작 실패: {e}")
-                self.state = AgentState.ERROR
-    
-    async def _handle_ingress_track_lost(self, track: "rtc.Track") -> None:
-        """Ingress 트랙 손실 처리"""
-        if isinstance(track, rtc.VideoTrack):
-            self._ingress_video_track = None
-        elif isinstance(track, rtc.AudioTrack):
-            self._ingress_audio_track = None
-        
-        if self._video_router_started:
-            logger.warning("[RoomAgent] Ingress 트랙 손실, VideoRouter 중지")
-            await self.video_router.stop()
-            self._video_router_started = False
-            self.state = AgentState.READY
-    
-    async def _handle_participant_track(
-        self,
-        track: "rtc.Track",
-        participant: "rtc.RemoteParticipant",
-    ) -> None:
-        """
-        일반 참가자 트랙 처리
-        
-        속기사/검수자의 트랙을 처리한다.
-        """
-        logger.debug(
-            f"[RoomAgent] 참가자 트랙: {participant.identity} {track.kind}"
-        )
+            asyncio.create_task(self._register_participant(participant))
     
     async def _register_participant(
         self,
@@ -455,23 +354,17 @@ class RoomAgent:
         await self.caption_manager.stop()
         await self.external_connector.stop()
         
-        if self._video_router_started:
-            await self.video_router.stop()
-            self._video_router_started = False
-        
-        self._ingress_video_track = None
-        self._ingress_audio_track = None
         self.room = None
         
         logger.info("[RoomAgent] 리소스 정리 완료")
     
     def get_current_timestamp(self) -> int:
         """현재 영상 타임스탬프 (밀리초)"""
-        return self.video_router.get_current_timestamp()
+        return int(time.time() * 1000) - self._start_time_ms
     
     def get_delayed_timestamp(self) -> int:
         """지연된 영상 타임스탬프 (밀리초)"""
-        return self.video_router.get_delayed_timestamp()
+        return max(0, self.get_current_timestamp() - self.delay_ms)
     
     def get_captions_in_range(
         self,
@@ -502,8 +395,7 @@ class RoomAgent:
             "room_name": self.room_name,
             "state": self.state.value,
             "agent_identity": self.agent_identity,
-            "video_router_started": self._video_router_started,
-            "video_router": self.video_router.get_stats(),
+            "delay_ms": self.delay_ms,
             "turn_manager": self.turn_manager.get_stats(),
             "caption_manager": self.caption_manager.get_stats(),
             "external_connector": self.external_connector.get_stats(),
