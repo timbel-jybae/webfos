@@ -1,0 +1,119 @@
+.stenographer-panel {
+  display: flex;
+  flex-direction: column;
+  border: 2px solid #ddd;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #fff;
+  height: 100%;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+/* [advice from AI] 송출 권한 보유 시 강조 */
+.stenographer-panel.has-turn {
+  border-color: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.3);
+}
+
+/* [advice from AI] 내 패널 구분 */
+.stenographer-panel.my-panel {
+  background: #f8fafc;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #fff3cd;
+  border-bottom: 1px solid #ddd;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+/* [advice from AI] 송출 권한 보유 시 헤더 색상 변경 */
+.stenographer-panel.has-turn .panel-header {
+  background: #dcfce7;
+}
+
+.keyboard-icon {
+  font-size: 1rem;
+}
+
+.panel-identity {
+  color: #333;
+  font-family: monospace;
+  font-size: 0.8rem;
+}
+
+/* [advice from AI] 송출 권한 배지 */
+.turn-badge {
+  margin-left: auto;
+  padding: 0.15rem 0.5rem;
+  background: #22c55e;
+  color: #fff;
+  font-size: 0.7rem;
+  border-radius: 3px;
+  font-weight: bold;
+}
+
+/* [advice from AI] 내 패널 배지 */
+.my-badge {
+  padding: 0.15rem 0.4rem;
+  background: #3b82f6;
+  color: #fff;
+  font-size: 0.7rem;
+  border-radius: 3px;
+  font-weight: bold;
+}
+
+.panel-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 0.5rem;
+  gap: 0.5rem;
+}
+
+.steno-input {
+  flex: 1;
+  border: none;
+  resize: none;
+  font-size: 1rem;
+  font-family: inherit;
+  outline: none;
+  background: transparent;
+}
+
+/* [advice from AI] 읽기 전용 스타일 */
+.steno-input[readonly] {
+  color: #666;
+  cursor: default;
+}
+
+.steno-input::placeholder {
+  color: #999;
+}
+
+/* [advice from AI] 송출 버튼 */
+.broadcast-btn {
+  align-self: flex-end;
+  padding: 0.5rem 1.5rem;
+  background: #22c55e;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.broadcast-btn:hover:not(:disabled) {
+  background: #16a34a;
+}
+
+.broadcast-btn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}

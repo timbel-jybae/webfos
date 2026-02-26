@@ -128,6 +128,10 @@ class RoomAgent:
             agent_identity=agent_identity,
         )
         
+        # [advice from AI] 속기사별 텍스트 상태 및 송출 텍스트 중앙 관리
+        self._stenographer_texts: Dict[str, str] = {}  # identity -> 현재 입력 텍스트
+        self._broadcast_text: str = ""  # 현재 송출된 텍스트
+        
         self._setup_turn_callbacks()
         self._setup_caption_callbacks()
         self._setup_external_callbacks()
@@ -249,6 +253,15 @@ class RoomAgent:
             asyncio.create_task(
                 self._unregister_participant(participant)
             )
+        
+        # [advice from AI] 프론트엔드 메시지 직접 처리
+        # LiveKit SDK: data_received 이벤트는 DataPacket 객체를 받음
+        @self.room.on("data_received")
+        def on_data_received(packet: "rtc.DataPacket"):
+            if packet.participant:
+                asyncio.create_task(
+                    self._handle_frontend_message(packet.data, packet.participant)
+                )
     
     def _check_existing_participants(self) -> None:
         """기존 참가자 확인 (Agent가 나중에 입장한 경우)"""
@@ -267,10 +280,18 @@ class RoomAgent:
         
         participant metadata에서 role 정보를 추출하여 TurnManager에 등록한다.
         metadata 형식: {"role": "stenographer" | "reviewer", "name": "..."}
+        
+        [advice from AI] 속기사 등록 시:
+        - 속기사 목록 브로드캐스트
+        - 현재 턴이 없으면 첫 번째 속기사에게 턴 부여
         """
         identity = participant.identity
         
+        # [advice from AI] 시스템 참가자 필터링 (ingress, agent 등)
         if identity == self.INGRESS_IDENTITY:
+            return
+        if identity.startswith("agent-"):
+            logger.debug(f"[RoomAgent] Agent identity 무시: {identity}")
             return
         
         role = "stenographer"
@@ -290,6 +311,53 @@ class RoomAgent:
             logger.info(
                 f"[RoomAgent] 참가자 등록 완료: {identity} ({role})"
             )
+            
+            # [advice from AI] 속기사 등록 시 목록 브로드캐스트 및 턴 관리
+            if role == "stenographer":
+                # 텍스트 상태 초기화
+                self._stenographer_texts[identity] = ""
+                
+                await self._broadcast_stenographer_list()
+                
+                # [advice from AI] 송출 권한 로직 개선
+                # 1. 현재 턴 보유자 확인
+                # 2. 턴 보유자가 없거나 유효하지 않으면 (퇴장한 참가자 등)
+                #    -> 현재 등록된 속기사 중 첫 번째에게 턴 부여
+                # 3. 항상 1명은 송출권한을 갖고 있어야 함
+                current_holder = self.turn_manager.get_current_holder()
+                registered_stenos = [s.identity for s in self.turn_manager.get_stenographers()]
+                
+                # 턴 보유자가 유효한지 확인 (현재 등록된 속기사인지)
+                holder_is_valid = current_holder and current_holder in registered_stenos
+                
+                if not holder_is_valid:
+                    # 턴 보유자가 없거나 유효하지 않음 -> 첫 번째 속기사에게 턴 부여
+                    if registered_stenos:
+                        first_steno = registered_stenos[0]
+                        # 기존 턴이 있으면 종료
+                        if self.turn_manager._current_turn:
+                            current_ts = self.get_current_timestamp()
+                            await self.turn_manager.end_turn(current_ts)
+                        
+                        turn = await self.start_turn(first_steno)
+                        if turn:
+                            logger.info(f"[RoomAgent] 송출 권한 부여 (첫 번째 속기사): {first_steno}")
+                        else:
+                            logger.error(f"[RoomAgent] 송출 권한 부여 실패: {first_steno}")
+                else:
+                    # 유효한 턴 보유자 있음
+                    logger.info(f"[RoomAgent] 기존 송출 권한 보유자: {current_holder}")
+                
+                # 모든 참가자에게 현재 턴 상태 브로드캐스트
+                await self._broadcast_turn_state()
+                
+                # 신규 참가자에게 현재 송출 텍스트 전송
+                if self._broadcast_text:
+                    await self._send_raw_message({
+                        "type": "caption.broadcast",
+                        "text": self._broadcast_text,
+                        "sender": "system",
+                    })
     
     async def _unregister_participant(
         self,
@@ -298,14 +366,226 @@ class RoomAgent:
         """참가자 등록 해제"""
         identity = participant.identity
         
+        # [advice from AI] 시스템 참가자 필터링 (ingress, agent 등)
         if identity == self.INGRESS_IDENTITY:
             return
+        if identity.startswith("agent-"):
+            return
         
-        if self.turn_manager.get_current_holder() == identity:
-            current_ts = self.get_current_timestamp()
-            await self.turn_manager.switch_turn(None, current_ts)
+        was_turn_holder = self.turn_manager.get_current_holder() == identity
+        was_stenographer = identity in [
+            p.identity for p in self.turn_manager.get_stenographers()
+        ]
         
+        # [advice from AI] 먼저 참가자 해제 (중요: 턴 전환 전에 해제해야 퇴장자가 다시 턴을 받지 않음)
         self.turn_manager.unregister_participant(identity)
+        
+        # [advice from AI] 속기사였으면 텍스트 상태 삭제
+        if was_stenographer:
+            self._stenographer_texts.pop(identity, None)
+        
+        # [advice from AI] 턴 보유자였으면 다음 속기사에게 전환 (참가자 해제 후)
+        if was_turn_holder:
+            current_ts = self.get_current_timestamp()
+            
+            # 먼저 현재 턴 종료 (중요: start_turn은 활성 턴이 있으면 실패함)
+            if self.turn_manager._current_turn and self.turn_manager._current_turn.is_active():
+                await self.turn_manager.end_turn(current_ts)
+                logger.info(f"[RoomAgent] 턴 종료 (퇴장자: {identity})")
+            
+            # 남은 속기사 확인
+            remaining = self.turn_manager.get_stenographers()
+            if remaining:
+                # 남은 속기사 중 첫 번째에게 턴 부여
+                turn = await self.turn_manager.start_turn(remaining[0].identity, current_ts)
+                if turn:
+                    logger.info(f"[RoomAgent] 턴 승계 완료: {remaining[0].identity}")
+                else:
+                    logger.error(f"[RoomAgent] 턴 승계 실패: {remaining[0].identity}")
+            else:
+                logger.info("[RoomAgent] 모든 속기사 퇴장, 턴 종료")
+        
+        # [advice from AI] 속기사였으면 목록/턴 브로드캐스트
+        if was_stenographer:
+            await self._broadcast_stenographer_list()
+            await self._broadcast_turn_state()
+            
+            logger.info(f"[RoomAgent] 속기사 퇴장 처리 완료: {identity}")
+    
+    async def _broadcast_stenographer_list(self) -> None:
+        """
+        [advice from AI] 속기사 목록 브로드캐스트 (현재 텍스트 상태 포함)
+        
+        프론트엔드에서 사용하는 메시지 형식:
+        { type: 'stenographer.list', stenographers: [{ identity, text }] }
+        """
+        stenographers = self.turn_manager.get_stenographers()
+        steno_list = [
+            {
+                "identity": s.identity, 
+                "text": self._stenographer_texts.get(s.identity, "")
+            } 
+            for s in stenographers
+        ]
+        
+        message = {
+            "type": "stenographer.list",
+            "stenographers": steno_list,
+        }
+        
+        await self._send_raw_message(message)
+        logger.info(f"[RoomAgent] 속기사 목록 브로드캐스트: {len(steno_list)}명")
+    
+    async def _broadcast_turn_state(self) -> None:
+        """
+        [advice from AI] 현재 턴 상태 브로드캐스트
+        
+        프론트엔드에서 사용하는 메시지 형식:
+        { type: 'turn.grant', holder: 'identity' }
+        """
+        current_holder = self.turn_manager.get_current_holder()
+        
+        message = {
+            "type": "turn.grant",
+            "holder": current_holder,
+        }
+        
+        await self._send_raw_message(message)
+        logger.info(f"[RoomAgent] 턴 상태 브로드캐스트: holder={current_holder}")
+    
+    async def _send_raw_message(self, message: dict) -> bool:
+        """
+        [advice from AI] 프론트엔드 형식의 raw 메시지 전송
+        """
+        if not self.room:
+            logger.warning("[RoomAgent] 메시지 전송 실패: room 없음")
+            return False
+        
+        try:
+            import json
+            data = json.dumps(message).encode()
+            await self.room.local_participant.publish_data(data)
+            logger.debug(f"[RoomAgent] Raw 메시지 전송: {message.get('type')}")
+            return True
+        except Exception as e:
+            logger.error(f"[RoomAgent] 메시지 전송 실패: {e}")
+            return False
+    
+    async def _handle_frontend_message(
+        self,
+        data: bytes,
+        participant: "rtc.RemoteParticipant",
+    ) -> None:
+        """
+        [advice from AI] 프론트엔드에서 보내는 메시지 처리
+        
+        메시지 형식:
+        - { type: 'caption.broadcast', text: '...' }: 송출 요청
+        - { type: 'caption.draft', text: '...' }: 임시 텍스트 업데이트
+        """
+        try:
+            import json
+            message = json.loads(data.decode())
+            msg_type = message.get("type")
+            sender = participant.identity
+            
+            logger.debug(f"[RoomAgent] 프론트엔드 메시지: {msg_type} from {sender}")
+            
+            if msg_type == "caption.broadcast":
+                await self._handle_broadcast_request(sender, message)
+            elif msg_type == "caption.draft":
+                await self._handle_draft_update(sender, message)
+            elif msg_type == "state.request":
+                # [advice from AI] 클라이언트가 현재 상태 요청 (초기 연결 시 메시지 손실 방지)
+                await self._handle_state_request(sender)
+            else:
+                logger.debug(f"[RoomAgent] 알 수 없는 메시지 타입: {msg_type}")
+                
+        except json.JSONDecodeError:
+            logger.debug("[RoomAgent] JSON 파싱 실패, MessageHandler로 위임")
+        except Exception as e:
+            logger.error(f"[RoomAgent] 메시지 처리 오류: {e}")
+    
+    async def _handle_broadcast_request(self, sender: str, message: dict) -> None:
+        """
+        [advice from AI] 송출 요청 처리
+        
+        송출 권한이 있는 속기사만 송출 가능.
+        송출 후 다음 속기사에게 턴 전환.
+        """
+        text = message.get("text", "")
+        
+        if not self.turn_manager.has_permission(sender):
+            logger.warning(f"[RoomAgent] 송출 권한 없음: {sender}")
+            return
+        
+        logger.info(f"[RoomAgent] 송출 요청: {sender}, text={text[:50]}...")
+        
+        # 1. 송출 텍스트 저장 (중앙 관리)
+        self._broadcast_text = text
+        
+        # 2. 송출 텍스트 브로드캐스트 (모든 참가자에게)
+        await self._send_raw_message({
+            "type": "caption.broadcast",
+            "text": text,
+            "sender": sender,
+        })
+        
+        # 3. 송출자의 입력 텍스트 초기화
+        self._stenographer_texts[sender] = ""
+        
+        # 4. 외부 시스템에 전송 (방송국 등)
+        current_ts = self.get_current_timestamp()
+        await self.external_connector.send_caption_to_broadcast(text, current_ts)
+        
+        # 5. 턴 전환 (다음 속기사에게) - 현재 송출자 제외
+        # [advice from AI] request_turn_switch를 사용하여 현재 보유자를 exclude
+        await self.turn_manager.request_turn_switch(sender, current_ts)
+        await self._broadcast_turn_state()
+        
+        # 6. 업데이트된 속기사 목록 브로드캐스트 (입력 텍스트 초기화 반영)
+        await self._broadcast_stenographer_list()
+    
+    async def _handle_draft_update(self, sender: str, message: dict) -> None:
+        """
+        [advice from AI] 임시 텍스트 업데이트 처리
+        
+        속기사별 텍스트 상태 저장 후 모든 참가자에게 브로드캐스트.
+        """
+        text = message.get("text", "")
+        
+        # 1. 속기사별 텍스트 상태 저장 (중앙 관리)
+        self._stenographer_texts[sender] = text
+        
+        # 2. 모든 참가자에게 재브로드캐스트 (발신자 정보 포함)
+        await self._send_raw_message({
+            "type": "caption.draft",
+            "text": text,
+            "sender": sender,
+        })
+    
+    async def _handle_state_request(self, sender: str) -> None:
+        """
+        [advice from AI] 클라이언트 상태 요청 처리
+        
+        클라이언트가 연결 후 현재 상태를 요청할 때 호출.
+        속기사 목록, 턴 상태, 송출 텍스트를 전송.
+        """
+        logger.info(f"[RoomAgent] 상태 요청: {sender}")
+        
+        # 1. 속기사 목록 전송
+        await self._broadcast_stenographer_list()
+        
+        # 2. 턴 상태 전송
+        await self._broadcast_turn_state()
+        
+        # 3. 송출 텍스트 전송 (있으면)
+        if self._broadcast_text:
+            await self._send_raw_message({
+                "type": "caption.broadcast",
+                "text": self._broadcast_text,
+                "sender": "system",
+            })
     
     async def start_turn(self, holder_identity: str) -> Optional[Turn]:
         """

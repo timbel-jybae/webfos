@@ -108,10 +108,11 @@ class MessageHandler:
         self.caption_manager = caption_manager
         self._is_running = True
         
+        # [advice from AI] LiveKit SDK: data_received 이벤트는 DataPacket 객체를 받음
         @room.on("data_received")
-        def on_data_received(data: bytes, participant: "rtc.RemoteParticipant", topic: str):
-            if topic == self.DATA_TOPIC:
-                asyncio.create_task(self._process_message(data, participant))
+        def on_data_received(packet: "rtc.DataPacket"):
+            if packet.participant:
+                asyncio.create_task(self._process_message(packet.data, packet.participant))
         
         logger.info(f"[MessageHandler] 시작: room={room.name}")
     
@@ -162,7 +163,9 @@ class MessageHandler:
                 )
                 
         except Exception as e:
-            logger.error(f"[MessageHandler] 메시지 파싱 오류: {e}")
+            # [advice from AI] 프론트엔드 메시지는 RoomMessage 형식이 아님 (RoomAgent에서 처리)
+            # 조용히 무시 (DEBUG 레벨로 로깅)
+            logger.debug(f"[MessageHandler] 메시지 파싱 스킵 (프론트엔드 형식): {e}")
     
     def register_handler(
         self,
@@ -220,11 +223,19 @@ class MessageHandler:
         try:
             data = message.to_bytes()
             
-            await self.room.local_participant.publish_data(
-                data,
-                topic=self.DATA_TOPIC,
-                destination_identities=destination_identities,
-            )
+            # [advice from AI] LiveKit SDK는 destination_identities=None을 허용하지 않음
+            # 전체 브로드캐스트 시 파라미터를 생략해야 함
+            if destination_identities:
+                await self.room.local_participant.publish_data(
+                    data,
+                    topic=self.DATA_TOPIC,
+                    destination_identities=destination_identities,
+                )
+            else:
+                await self.room.local_participant.publish_data(
+                    data,
+                    topic=self.DATA_TOPIC,
+                )
             
             logger.debug(
                 f"[MessageHandler] 메시지 전송: {message.type.value} "

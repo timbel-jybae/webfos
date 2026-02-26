@@ -1,0 +1,36 @@
+.broadcast-panel {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #b8d4e8;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #e8f4fc;
+  height: 100%;
+}
+
+.broadcast-panel .panel-header {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  background: #d4e8f5;
+  border-bottom: 1px solid #b8d4e8;
+  font-size: 0.875rem;
+}
+
+.monitor-icon {
+  font-size: 1rem;
+}
+
+.broadcast-panel .panel-content {
+  flex: 1;
+  display: flex;
+  padding: 0.5rem;
+}
+
+.broadcast-text {
+  flex: 1;
+  font-size: 1rem;
+  color: #333;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

@@ -23,9 +23,13 @@ export function useLiveKit({ isReviewer = false } = {}) {
   const [videoTrack, setVideoTrack] = useState(null)
   const [audioTrack, setAudioTrack] = useState(null)
   const [error, setError] = useState(null)
+  // [advice from AI] 로컬 참가자 identity 상태 추가
+  const [localIdentity, setLocalIdentity] = useState(null)
   
   const roomRef = useRef(null)
   const connectingRef = useRef(false)
+  // [advice from AI] DataChannel 메시지 콜백 저장
+  const dataCallbacksRef = useRef([])
   
   const updateParticipants = useCallback(() => {
     if (!roomRef.current) return
@@ -142,11 +146,38 @@ export function useLiveKit({ isReviewer = false } = {}) {
         setConnectionState(CONNECTION_STATE.DISCONNECTED)
         setVideoTrack(null)
         setAudioTrack(null)
+        setLocalIdentity(null)
+      })
+      
+      // [advice from AI] DataChannel 메시지 수신 핸들러
+      room.on(RoomEvent.DataReceived, (payload, participant) => {
+        try {
+          const decoder = new TextDecoder()
+          const jsonStr = decoder.decode(payload)
+          const message = JSON.parse(jsonStr)
+          console.log('[LiveKit] DataChannel 수신:', message, 'from:', participant?.identity)
+          
+          // 등록된 콜백 호출
+          dataCallbacksRef.current.forEach(cb => {
+            try {
+              cb(message, participant?.identity)
+            } catch (e) {
+              console.error('[LiveKit] DataChannel 콜백 오류:', e)
+            }
+          })
+        } catch (e) {
+          console.error('[LiveKit] DataChannel 파싱 오류:', e)
+        }
       })
       
       // 연결
       await room.connect(wsUrl, token)
       connectingRef.current = false
+      
+      // [advice from AI] 연결 후 localParticipant identity 저장
+      const myIdentity = room.localParticipant?.identity
+      setLocalIdentity(myIdentity)
+      console.log('[LiveKit] 내 identity:', myIdentity)
       
       // 연결 후 참가자 정보 로깅
       const remoteParticipants = Array.from(room.remoteParticipants.values())
@@ -189,6 +220,44 @@ export function useLiveKit({ isReviewer = false } = {}) {
     setVideoTrack(null)
     setAudioTrack(null)
     setParticipants([])
+    setLocalIdentity(null)
+  }, [])
+  
+  // [advice from AI] DataChannel 메시지 전송
+  const sendData = useCallback(async (message, destinationIdentities = null) => {
+    if (!roomRef.current?.localParticipant) {
+      console.warn('[LiveKit] sendData: 연결되지 않음')
+      return false
+    }
+    
+    try {
+      const encoder = new TextEncoder()
+      const data = encoder.encode(JSON.stringify(message))
+      
+      const options = destinationIdentities 
+        ? { destinationIdentities }
+        : undefined
+      
+      await roomRef.current.localParticipant.publishData(data, options)
+      console.log('[LiveKit] DataChannel 전송:', message)
+      return true
+    } catch (e) {
+      console.error('[LiveKit] DataChannel 전송 오류:', e)
+      return false
+    }
+  }, [])
+  
+  // [advice from AI] DataChannel 메시지 수신 콜백 등록
+  const onDataReceived = useCallback((callback) => {
+    dataCallbacksRef.current.push(callback)
+    
+    // cleanup 함수 반환
+    return () => {
+      const idx = dataCallbacksRef.current.indexOf(callback)
+      if (idx !== -1) {
+        dataCallbacksRef.current.splice(idx, 1)
+      }
+    }
   }, [])
   
   const startAudio = useCallback(async () => {
@@ -223,6 +292,10 @@ export function useLiveKit({ isReviewer = false } = {}) {
     connect,
     disconnect,
     startAudio,
+    // [advice from AI] 턴 관리용 추가 반환값
+    localIdentity,
+    sendData,
+    onDataReceived,
   }
 }
 

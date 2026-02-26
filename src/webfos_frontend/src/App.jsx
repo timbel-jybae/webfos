@@ -17,6 +17,8 @@ import { VideoPlayer } from './components/VideoPlayer'
 import { DelayedPlayer } from './components/DelayedPlayer'
 import { DelaySelector } from './components/DelaySelector'
 import { ConnectionPanel } from './components/ConnectionPanel'
+import { StenographerPanel } from './components/StenographerPanel'
+import { BroadcastPanel } from './components/BroadcastPanel'
 import { listChannels, joinChannel } from './api/roomApi'
 import { DEFAULT_DELAY_SECONDS } from './utils/constants'
 
@@ -27,6 +29,12 @@ function App() {
   const [selectedDelay, setSelectedDelay] = useState(DEFAULT_DELAY_SECONDS)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+
+  // [advice from AI] 턴 관리 상태
+  const [stenographers, setStenographers] = useState([])  // [{ identity, text }]
+  const [currentTurnHolder, setCurrentTurnHolder] = useState(null)
+  const [broadcastText, setBroadcastText] = useState('')
+  const [myText, setMyText] = useState('')  // 내 입력 텍스트 (로컬 관리)
 
   const isReviewer = currentRole === 'reviewer'
 
@@ -39,11 +47,89 @@ function App() {
     connect,
     disconnect,
     startAudio,
+    // [advice from AI] 턴 관리용 추가
+    localIdentity,
+    sendData,
+    onDataReceived,
   } = useLiveKit({ isReviewer })
 
   useEffect(() => {
     loadChannels()
   }, [])
+
+  // [advice from AI] DataChannel 메시지 수신 처리
+  // 의존성에서 myText 제거 - 클로저 문제 방지, setStenographers 콜백에서 최신 상태 사용
+  useEffect(() => {
+    if (!isConnected || isReviewer) return
+    
+    const unsubscribe = onDataReceived((message, senderIdentity) => {
+      console.log('[App] DataChannel 메시지:', message.type, message)
+      
+      // [advice from AI] 백엔드 메시지에 sender 필드가 있으면 사용
+      const actualSender = message.sender || senderIdentity
+      
+      switch (message.type) {
+        case 'stenographer.list':
+          // [advice from AI] 속기사 목록 동기화
+          // setStenographers 콜백에서 이전 상태와 myText 최신값 사용
+          setStenographers(prev => {
+            const newList = message.stenographers || []
+            return newList.map(s => {
+              if (s.identity === localIdentity) {
+                // 내 텍스트는 로컬 상태 유지 (prev에서 찾거나 빈 문자열)
+                const myPrevText = prev.find(p => p.identity === localIdentity)?.text || ''
+                return { ...s, text: myPrevText }
+              }
+              return s
+            })
+          })
+          console.log('[App] 속기사 목록 업데이트:', message.stenographers?.length, '명')
+          break
+          
+        case 'turn.grant':
+        case 'turn.switch':
+          // 턴 권한 변경
+          setCurrentTurnHolder(message.holder)
+          console.log('[App] 턴 보유자 변경:', message.holder)
+          break
+          
+        case 'caption.broadcast':
+          // 송출 텍스트 수신
+          setBroadcastText(message.text || '')
+          // [advice from AI] 송출자의 입력란 초기화 (자신이 송출한 경우)
+          if (actualSender === localIdentity) {
+            setMyText('')
+          }
+          break
+          
+        case 'caption.draft':
+          // [advice from AI] 다른 속기사의 임시 텍스트 업데이트
+          if (actualSender !== localIdentity) {
+            setStenographers(prev => prev.map(s => 
+              s.identity === actualSender 
+                ? { ...s, text: message.text }
+                : s
+            ))
+          }
+          break
+          
+        default:
+          console.log('[App] 알 수 없는 메시지 타입:', message.type)
+      }
+    })
+    
+    // [advice from AI] 연결 후 백엔드에 상태 요청 (초기 메시지 손실 방지)
+    // 약간의 지연 후 요청하여 콜백이 확실히 등록된 후 응답 수신
+    const requestTimer = setTimeout(() => {
+      console.log('[App] 백엔드에 상태 요청')
+      sendData({ type: 'state.request' })
+    }, 100)
+    
+    return () => {
+      clearTimeout(requestTimer)
+      unsubscribe()
+    }
+  }, [isConnected, isReviewer, onDataReceived, localIdentity, sendData])
 
   const loadChannels = async () => {
     setLoading(true)
@@ -80,10 +166,52 @@ function App() {
     disconnect()
     setSelectedChannel(null)
     setCurrentRole(null)
+    setStenographers([])
+    setCurrentTurnHolder(null)
+    setBroadcastText('')
+    setMyText('')
   }, [disconnect])
 
+  // [advice from AI] 속기사 텍스트 변경 핸들러
+  const handleTextChange = useCallback((identity, text) => {
+    // [advice from AI] 본인 패널만 수정 가능
+    if (identity !== localIdentity) {
+      console.warn('[App] 다른 속기사 패널 수정 시도 무시:', identity)
+      return
+    }
+    
+    // 본인 텍스트 로컬 상태 업데이트
+    setMyText(text)
+    
+    // 로컬 속기사 목록에도 업데이트 (내 패널 표시용)
+    setStenographers(prev => prev.map(s => 
+      s.identity === identity ? { ...s, text } : s
+    ))
+    
+    // 다른 참가자에게 브로드캐스트
+    sendData({ type: 'caption.draft', text })
+  }, [sendData, localIdentity])
+
+  // [advice from AI] 송출 버튼 핸들러
+  const handleBroadcast = useCallback((identity, text) => {
+    console.log('[App] 송출 요청:', identity, text)
+    
+    // [advice from AI] 발신자 자신의 화면도 즉시 업데이트 (DataChannel은 자신에게 전송 안됨)
+    setBroadcastText(text)
+    setMyText('')
+    
+    // [advice from AI] 다음 턴 홀더로 전환 (자신이 아닌 다른 속기사)
+    const nextHolder = stenographers.find(s => s.identity !== localIdentity)?.identity
+    if (nextHolder) {
+      setCurrentTurnHolder(nextHolder)
+      console.log('[App] 턴 전환 (로컬):', nextHolder)
+    }
+    
+    sendData({ type: 'caption.broadcast', text })
+  }, [sendData, stenographers, localIdentity])
+
   // ===== 연결된 상태 — 검수자 뷰 =====
-  // [advice from AI] 클라이언트 측 지연 버퍼링 사용 (DelayedPlayer)
+  // [advice from AI] 검수자: 지연 영상 + 자막 검수용 (추후 구현)
   if (isConnected && isReviewer) {
     return (
       <div className="app">
@@ -111,24 +239,72 @@ function App() {
     )
   }
 
-  // ===== 연결된 상태 — 참가자 뷰 =====
+  // ===== 연결된 상태 — 참가자(속기사) 뷰 =====
+  // [advice from AI] 레이아웃: 비디오(1/3) | 속기사패널(2개) | 송출텍스트
   if (isConnected && !isReviewer) {
+    // [advice from AI] 속기사 목록이 비어있으면 기본값 설정 (백엔드 연동 전)
+    const displayStenographers = stenographers.length > 0 
+      ? stenographers 
+      : [
+          { identity: localIdentity || 'me', text: '' },
+          { identity: 'waiting...', text: '' },
+        ]
+    
+    // [advice from AI] 송출 권한 로직 개선
+    // - 백엔드에서 turn.grant를 받기 전까지는 아무도 턴을 갖지 않음
+    // - currentTurnHolder가 null이면 모든 송출 버튼 비활성화
+    // - 백엔드가 항상 1명에게 턴을 부여하므로 정상 연결 시 null이 오래 지속되지 않음
+    const activeTurnHolder = currentTurnHolder
+    
     return (
-      <div className="app">
-        <h1>Webfos - 참가자</h1>
-        {selectedChannel && <p className="channel-name">{selectedChannel.name}</p>}
+      <div className="app stenographer-view">
+        {/* 상단 상태바 */}
+        <div className="status-bar">
+          <span className="status-title">Webfos - 속기사</span>
+          <span className="status-channel">{selectedChannel?.name}</span>
+          <span className="status-identity">내 ID: {localIdentity?.slice(0, 8) || '...'}</span>
+          <button className="btn-audio" onClick={startAudio}>
+            🔊 오디오 시작
+          </button>
+          <button className="btn-disconnect" onClick={handleDisconnect}>
+            연결 해제
+          </button>
+        </div>
 
-        <VideoPlayer
-          videoTrack={videoTrack}
-          audioTrack={audioTrack}
-        />
+        {/* 메인 콘텐츠 영역 */}
+        <div className="main-content">
+          {/* 좌측: 비디오 플레이어 (1/3) */}
+          <div className="video-section">
+            <VideoPlayer
+              videoTrack={videoTrack}
+              audioTrack={audioTrack}
+            />
+          </div>
 
-        <ConnectionPanel
-          connectionState={connectionState}
-          participants={participants}
-          onDisconnect={handleDisconnect}
-          onStartAudio={startAudio}
-        />
+          {/* 중앙: 속기사 패널 (2개 세로 배치) */}
+          <div className="stenographer-section">
+            {displayStenographers.slice(0, 2).map((steno, idx) => {
+              const isMyPanel = steno.identity === localIdentity
+              return (
+                <StenographerPanel
+                  key={steno.identity}
+                  identity={steno.identity}
+                  index={idx + 1}
+                  text={isMyPanel ? myText : steno.text}
+                  isMyPanel={isMyPanel}
+                  hasTurn={steno.identity === activeTurnHolder}
+                  onTextChange={(text) => handleTextChange(steno.identity, text)}
+                  onBroadcast={(text) => handleBroadcast(steno.identity, text)}
+                />
+              )
+            })}
+          </div>
+
+          {/* 우측: 송출 텍스트 패널 */}
+          <div className="broadcast-section">
+            <BroadcastPanel text={broadcastText} />
+          </div>
+        </div>
       </div>
     )
   }
