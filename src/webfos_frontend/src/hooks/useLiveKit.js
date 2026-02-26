@@ -7,6 +7,10 @@
  * - connectionState: 연결 상태
  * - participants: 참가자 목록
  * - videoTrack, audioTrack: 구독된 트랙
+ * 
+ * [advice from AI] 클라이언트 측 버퍼링 사용:
+ * - 검수자도 실시간 트랙(ingress-hls-source)을 구독
+ * - 클라이언트 측에서 useDelayBuffer로 지연 재생
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react'
@@ -54,7 +58,7 @@ export function useLiveKit({ isReviewer = false } = {}) {
       const room = new Room({
         adaptiveStream: true,
         dynacast: true,
-        // 검수자는 오디오 자동 재생 비활성화 (지연 버퍼 사용)
+        // [advice from AI] 검수자는 클라이언트 측 버퍼링 사용하므로 오디오 자동 재생 비활성화
         webAudioMix: !isReviewer,
       })
       
@@ -93,18 +97,20 @@ export function useLiveKit({ isReviewer = false } = {}) {
           muted: track.isMuted,
         })
         
-        // 검수자: 실시간 소스만 수신
-        if (isReviewer && participant.identity !== REALTIME_IDENTITY) {
-          console.log('[LiveKit] 검수자: 실시간 외 소스 구독 해제:', participant.identity)
+        // [advice from AI] 클라이언트 측 버퍼링 사용
+        // 검수자/참가자 모두 실시간 트랙(ingress-hls-source)만 수신
+        // 검수자는 클라이언트에서 useDelayBuffer로 지연 재생
+        if (participant.identity !== REALTIME_IDENTITY) {
+          console.log(`[LiveKit] ${participant.identity} 트랙 구독 해제 (대상: ${REALTIME_IDENTITY})`)
           publication.setSubscribed(false)
           return
         }
         
         if (track.kind === Track.Kind.Video) {
-          console.log('[LiveKit] 비디오 트랙 설정')
+          console.log('[LiveKit] 비디오 트랙 설정:', participant.identity)
           setVideoTrack(track)
         } else if (track.kind === Track.Kind.Audio) {
-          console.log('[LiveKit] 오디오 트랙 설정')
+          console.log('[LiveKit] 오디오 트랙 설정:', participant.identity)
           setAudioTrack(track)
         }
       })
@@ -139,14 +145,13 @@ export function useLiveKit({ isReviewer = false } = {}) {
       }))
       console.log('[LiveKit] 연결 완료, 참가자:', participantInfo)
       
-      // 검수자: 실시간 소스 외 구독 해제
-      if (isReviewer) {
-        room.remoteParticipants.forEach((p) => {
-          if (p.identity !== REALTIME_IDENTITY) {
-            p.trackPublications.forEach((pub) => pub.setSubscribed(false))
-          }
-        })
-      }
+      // [advice from AI] 실시간 트랙만 구독 (검수자/참가자 모두)
+      room.remoteParticipants.forEach((p) => {
+        if (p.identity !== REALTIME_IDENTITY) {
+          console.log(`[LiveKit] 연결 후 ${p.identity} 트랙 구독 해제 (대상: ${REALTIME_IDENTITY})`)
+          p.trackPublications.forEach((pub) => pub.setSubscribed(false))
+        }
+      })
       
       updateParticipants()
       

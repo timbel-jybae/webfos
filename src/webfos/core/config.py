@@ -40,6 +40,55 @@ class Settings(BaseSettings):
     # === 로깅 ===
     LOG_LEVEL: str = "INFO"
 
+    # === RoomAgent 설정 ===
+    # [advice from AI] RoomAgent 중앙 허브 관련 설정
+    
+    # 영상 지연 설정 (VideoRouter)
+    AGENT_DELAY_MS: int = 3500              # 검수자용 영상 지연 시간 (밀리초)
+    AGENT_BUFFER_MARGIN_MS: int = 1000      # 버퍼 여유 시간 (밀리초)
+    AGENT_VIDEO_FPS: int = 30               # 비디오 프레임 레이트
+    
+    # 턴 관리 설정 (TurnManager)
+    AGENT_TURN_DURATION_MS: int = 30000     # 기본 턴 지속 시간 (밀리초, 자동 전환 시)
+    AGENT_TURN_AUTO_SWITCH: bool = False    # 자동 턴 전환 활성화 여부
+    AGENT_MAX_STENOGRAPHERS: int = 4        # 최대 속기사 수
+    
+    # 자막 관리 설정 (CaptionManager)
+    AGENT_CAPTION_RETENTION_MS: int = 60000 # 자막 버퍼 보관 시간 (밀리초)
+    AGENT_CAPTION_SYNC_INTERVAL_MS: int = 500  # 검수자 자막 동기화 간격 (밀리초)
+    
+    # 외부 연동 설정 (ExternalConnector)
+    STT_SERVICE_URL: str = ""               # STT 서비스 URL (빈 문자열이면 비활성화)
+    STT_SERVICE_TIMEOUT: float = 5.0        # STT 서비스 타임아웃 (초)
+    OCR_SERVICE_URL: str = ""               # OCR 서비스 URL (빈 문자열이면 비활성화)
+    OCR_SERVICE_TIMEOUT: float = 5.0        # OCR 서비스 타임아웃 (초)
+    BROADCAST_OUTPUT_URL: str = ""          # 방송국 전송 URL (빈 문자열이면 비활성화)
+    BROADCAST_OUTPUT_TIMEOUT: float = 10.0  # 방송국 전송 타임아웃 (초)
+    
+    # Agent Identity 설정
+    AGENT_IDENTITY: str = "room-agent"      # RoomAgent identity
+    AGENT_DELAYED_IDENTITY: str = "room-agent-delayed"  # 지연 트랙 identity
+
+    @property
+    def agent_buffer_total_ms(self) -> int:
+        """VideoRouter 전체 버퍼 크기 (밀리초)"""
+        return self.AGENT_DELAY_MS + self.AGENT_BUFFER_MARGIN_MS
+    
+    @property
+    def stt_enabled(self) -> bool:
+        """STT 서비스 활성화 여부"""
+        return bool(self.STT_SERVICE_URL)
+    
+    @property
+    def ocr_enabled(self) -> bool:
+        """OCR 서비스 활성화 여부"""
+        return bool(self.OCR_SERVICE_URL)
+    
+    @property
+    def broadcast_enabled(self) -> bool:
+        """방송국 전송 활성화 여부"""
+        return bool(self.BROADCAST_OUTPUT_URL)
+
     @property
     def livekit_http_url(self) -> str:
         """LiveKit HTTP API URL (ws:// -> http://)"""

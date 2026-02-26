@@ -5,6 +5,10 @@
  * 1. 채널 목록 조회
  * 2. 채널 선택 (입장 버튼)
  * 3. "참가자로 참여" / "검수자로 참여" 선택 -> 현재 탭에서 바로 연결
+ * 
+ * [advice from AI] 클라이언트 측 버퍼링 사용:
+ * - 검수자: DelayedPlayer 사용 (클라이언트 측 지연 버퍼링)
+ * - 참가자: VideoPlayer 사용 (실시간 재생)
  */
 
 import { useState, useCallback, useEffect } from 'react'
@@ -77,15 +81,17 @@ function App() {
   }, [disconnect])
 
   // ===== 연결된 상태 — 검수자 뷰 =====
+  // [advice from AI] 클라이언트 측 지연 버퍼링 사용 (DelayedPlayer)
   if (isConnected && isReviewer) {
     return (
       <div className="app">
         <h1>Webfos - 검수자 ({DELAY_MS / 1000}초 지연)</h1>
         {selectedChannel && <p className="channel-name">{selectedChannel.name}</p>}
 
-        <div className="info-banner">
-          클라이언트 측 {DELAY_MS / 1000}초 지연 버퍼 활성화됨
-        </div>
+        <QualitySelector
+          value={selectedQuality}
+          onChange={setSelectedQuality}
+        />
 
         <DelayedPlayer
           videoTrack={videoTrack}
