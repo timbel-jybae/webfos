@@ -1,0 +1,30 @@
+.delay-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.delay-selector label {
+  color: #94a3b8;
+  font-size: 0.9rem;
+}
+
+.delay-selector select {
+  padding: 0.4rem 0.75rem;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  background: #0f172a;
+  color: #eee;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.delay-selector select:focus {
+  outline: none;
+  border-color: #60a5fa;
+}
+
+.delay-selector select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

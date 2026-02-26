@@ -15,16 +15,16 @@ import { useState, useCallback, useEffect } from 'react'
 import { useLiveKit } from './hooks/useLiveKit'
 import { VideoPlayer } from './components/VideoPlayer'
 import { DelayedPlayer } from './components/DelayedPlayer'
-import { QualitySelector } from './components/QualitySelector'
+import { DelaySelector } from './components/DelaySelector'
 import { ConnectionPanel } from './components/ConnectionPanel'
 import { listChannels, joinChannel } from './api/roomApi'
-import { DELAY_MS } from './utils/constants'
+import { DEFAULT_DELAY_SECONDS } from './utils/constants'
 
 function App() {
   const [channels, setChannels] = useState([])
   const [selectedChannel, setSelectedChannel] = useState(null)
   const [currentRole, setCurrentRole] = useState(null)
-  const [selectedQuality, setSelectedQuality] = useState('high')
+  const [selectedDelay, setSelectedDelay] = useState(DEFAULT_DELAY_SECONDS)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
@@ -58,14 +58,16 @@ function App() {
     }
   }
 
+  // [advice from AI] connect에 isReviewer를 인자로 전달 (setState 비동기 문제 해결)
   const handleJoinAs = useCallback(async (channelId, role) => {
     setLoading(true)
     setError(null)
     try {
       const data = await joinChannel(channelId, role)
+      const isReviewerRole = role === 'reviewer'
       setCurrentRole(role)
       setSelectedChannel(channels.find(ch => ch.id === channelId))
-      await connect(data.ws_url, data.token)
+      await connect(data.ws_url, data.token, isReviewerRole)
     } catch (err) {
       setError(err.message)
       setCurrentRole(null)
@@ -85,18 +87,18 @@ function App() {
   if (isConnected && isReviewer) {
     return (
       <div className="app">
-        <h1>Webfos - 검수자 ({DELAY_MS / 1000}초 지연)</h1>
+        <h1>Webfos - 검수자 ({selectedDelay}초 지연)</h1>
         {selectedChannel && <p className="channel-name">{selectedChannel.name}</p>}
 
-        <QualitySelector
-          value={selectedQuality}
-          onChange={setSelectedQuality}
+        <DelaySelector
+          value={selectedDelay}
+          onChange={setSelectedDelay}
         />
 
         <DelayedPlayer
           videoTrack={videoTrack}
           audioTrack={audioTrack}
-          quality={selectedQuality}
+          delay={selectedDelay}
         />
 
         <ConnectionPanel

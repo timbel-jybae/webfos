@@ -14,7 +14,7 @@
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { Room, RoomEvent, Track, ConnectionState } from 'livekit-client'
+import { Room, RoomEvent, Track, ConnectionState, VideoQuality } from 'livekit-client'
 import { REALTIME_IDENTITY, CONNECTION_STATE } from '../utils/constants'
 
 export function useLiveKit({ isReviewer = false } = {}) {
@@ -37,7 +37,8 @@ export function useLiveKit({ isReviewer = false } = {}) {
     })))
   }, [])
   
-  const connect = useCallback(async (wsUrl, token) => {
+  // [advice from AI] isReviewer를 인자로 직접 받아 setState 비동기 문제 해결
+  const connect = useCallback(async (wsUrl, token, isReviewerArg = false) => {
     // 이미 연결 중이거나 연결된 상태면 스킵
     if (connectingRef.current || roomRef.current?.state === 'connected') {
       console.log('[LiveKit] 이미 연결 중/연결됨, 스킵')
@@ -54,13 +55,19 @@ export function useLiveKit({ isReviewer = false } = {}) {
     setConnectionState(CONNECTION_STATE.CONNECTING)
     setError(null)
     
+    // [advice from AI] 인자로 받은 isReviewerArg 사용 (setState 비동기 문제 해결)
+    const reviewerMode = isReviewerArg
+    console.log('[LiveKit] connect 시작, isReviewer:', reviewerMode)
+    
     try {
+      // [advice from AI] 검수자는 고해상도 필요, adaptiveStream 비활성화
       const room = new Room({
-        adaptiveStream: true,
+        adaptiveStream: reviewerMode ? false : true,  // 검수자는 항상 최고 해상도
         dynacast: true,
         // [advice from AI] 검수자는 클라이언트 측 버퍼링 사용하므로 오디오 자동 재생 비활성화
-        webAudioMix: !isReviewer,
+        webAudioMix: !reviewerMode,
       })
+      console.log('[LiveKit] Room 생성, adaptiveStream:', reviewerMode ? 'disabled' : 'enabled')
       
       roomRef.current = room
       
@@ -107,7 +114,15 @@ export function useLiveKit({ isReviewer = false } = {}) {
         }
         
         if (track.kind === Track.Kind.Video) {
-          console.log('[LiveKit] 비디오 트랙 설정:', participant.identity)
+          console.log('[LiveKit] 비디오 트랙 설정:', participant.identity, 'reviewerMode:', reviewerMode)
+          // [advice from AI] 검수자는 최고 품질로 설정
+          if (reviewerMode) {
+            console.log('[LiveKit] 검수자 품질 설정 시도, setVideoQuality 존재:', !!publication.setVideoQuality)
+            if (publication.setVideoQuality) {
+              publication.setVideoQuality(VideoQuality.HIGH)
+              console.log('[LiveKit] 비디오 품질 HIGH로 설정 완료')
+            }
+          }
           setVideoTrack(track)
         } else if (track.kind === Track.Kind.Audio) {
           console.log('[LiveKit] 오디오 트랙 설정:', participant.identity)
@@ -162,7 +177,7 @@ export function useLiveKit({ isReviewer = false } = {}) {
       setConnectionState(CONNECTION_STATE.DISCONNECTED)
       throw err
     }
-  }, [isReviewer, updateParticipants])
+  }, [updateParticipants])
   
   const disconnect = useCallback(async () => {
     connectingRef.current = false

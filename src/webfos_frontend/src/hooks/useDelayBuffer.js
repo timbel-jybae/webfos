@@ -2,9 +2,10 @@
  * 검수자용 지연 버퍼 관리 훅 (싱글톤 버전)
  * 
  * [advice from AI] React Strict Mode 중복 실행 방지를 위해 모듈 레벨 싱글톤 사용
+ * [advice from AI] 고정 비트레이트 (2Mbps) 사용 - 해상도 유지 시 충분, 클라이언트 부하 감소
  * 
  * MediaRecorder + MediaSource를 사용하여 지연 재생 구현.
- * - startBuffer(videoTrack, audioTrack, quality): 버퍼링 시작
+ * - startBuffer(videoTrack, audioTrack, delaySeconds): 버퍼링 시작
  * - stopBuffer(): 버퍼링 중지
  * - delayedVideoRef: 지연 비디오 엘리먼트 ref
  * - isReady: 버퍼 준비 완료 여부
@@ -12,12 +13,11 @@
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { DELAY_MS, QUALITY_OPTIONS } from '../utils/constants'
+import { DEFAULT_DELAY_SECONDS, FIXED_VIDEO_BITRATE, FIXED_AUDIO_BITRATE } from '../utils/constants'
 
 const MAX_BUFFER_CHUNKS = 30
 const PROCESS_INTERVAL_MS = 50
 const MAX_RETRY_COUNT = 3
-const TARGET_DELAY_SECONDS = DELAY_MS / 1000
 const MIN_BUFFER_SECONDS = 0.5
 const BUFFER_TOLERANCE = 0.5
 
@@ -39,6 +39,7 @@ const globalState = {
   captureTimeoutId: null,
   startId: 0,
   lastBufferHealth: 0,
+  targetDelay: DEFAULT_DELAY_SECONDS,
 }
 
 function notifyStateChange(state) {
@@ -190,8 +191,9 @@ function monitorBuffer() {
   const bufferHealth = getBufferHealth()
   globalState.lastBufferHealth = bufferHealth
   
-  const minRequiredBuffer = TARGET_DELAY_SECONDS - BUFFER_TOLERANCE
-  const maxAllowedBuffer = TARGET_DELAY_SECONDS + BUFFER_TOLERANCE
+  const targetDelay = globalState.targetDelay
+  const minRequiredBuffer = targetDelay - BUFFER_TOLERANCE
+  const maxAllowedBuffer = targetDelay + BUFFER_TOLERANCE
   
   // [advice from AI] 버퍼 범위 유지: TARGET ± TOLERANCE
   
@@ -206,7 +208,7 @@ function monitorBuffer() {
     } else if (bufferHealth > maxAllowedBuffer && sb.buffered.length > 0) {
       // 버퍼 초과 - seek로 따라잡기
       const bufferEnd = sb.buffered.end(sb.buffered.length - 1)
-      const targetTime = bufferEnd - TARGET_DELAY_SECONDS
+      const targetTime = bufferEnd - targetDelay
       
       if (targetTime > video.currentTime + BUFFER_TOLERANCE) {
         console.log('[DelayBuffer] 버퍼 초과, seek:', 
@@ -217,10 +219,10 @@ function monitorBuffer() {
   } else {
     // 일시정지 상태일 때
     
-    if (bufferHealth >= TARGET_DELAY_SECONDS && sb.buffered.length > 0) {
+    if (bufferHealth >= targetDelay && sb.buffered.length > 0) {
       // 버퍼가 충분히 쌓이면 올바른 위치에서 재생 재개
       const bufferEnd = sb.buffered.end(sb.buffered.length - 1)
-      const targetTime = bufferEnd - TARGET_DELAY_SECONDS
+      const targetTime = bufferEnd - targetDelay
       
       console.log('[DelayBuffer] 버퍼 충분, 재생 재개:', targetTime.toFixed(1))
       video.currentTime = targetTime
@@ -239,6 +241,7 @@ function monitorBuffer() {
       chunks: globalState.chunkQueue.length,
       processed: globalState.processedCount,
       bufferHealth,
+      targetDelay,
     }
   })
 }
@@ -289,7 +292,8 @@ async function processQueue() {
   }
 }
 
-function startBufferGlobal(videoTrack, audioTrack, quality, videoElement) {
+// [advice from AI] quality 매개변수 제거, 고정 비트레이트 사용
+function startBufferGlobal(videoTrack, audioTrack, videoElement, delaySeconds = DEFAULT_DELAY_SECONDS) {
   if (!videoTrack || !audioTrack) {
     console.warn('[DelayBuffer] 비디오 또는 오디오 트랙 없음')
     return
@@ -303,6 +307,7 @@ function startBufferGlobal(videoTrack, audioTrack, quality, videoElement) {
   
   globalState.isStarted = true
   globalState.startId++
+  globalState.targetDelay = delaySeconds
   const currentStartId = globalState.startId
   globalState.videoElement = videoElement
   notifyStateChange({ isBuffering: true, error: null })
@@ -313,12 +318,19 @@ function startBufferGlobal(videoTrack, audioTrack, quality, videoElement) {
   console.log('[DelayBuffer] 지연 버퍼 시작', { 
     video: { readyState: videoMST.readyState, muted: videoMST.muted },
     audio: { readyState: audioMST.readyState, muted: audioMST.muted },
-    delayMs: DELAY_MS,
+    delaySeconds: globalState.targetDelay,
     startId: currentStartId,
   })
   
+  // [advice from AI] hiddenVideo 크기를 원본 해상도로 설정해야 captureStream 품질 유지
+  const videoSettings = videoMST.getSettings()
+  const videoWidth = videoSettings.width || 1920
+  const videoHeight = videoSettings.height || 1080
+  
+  console.log('[DelayBuffer] 원본 해상도:', videoWidth, 'x', videoHeight)
+  
   const hiddenVideo = document.createElement('video')
-  hiddenVideo.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;'
+  hiddenVideo.style.cssText = `position:fixed;top:-9999px;left:-9999px;width:${videoWidth}px;height:${videoHeight}px;`
   hiddenVideo.autoplay = true
   hiddenVideo.playsInline = true
   hiddenVideo.muted = true
@@ -331,7 +343,8 @@ function startBufferGlobal(videoTrack, audioTrack, quality, videoElement) {
   hiddenVideo.srcObject = originalStream
   
   const startCaptureAndRecord = () => {
-    console.log('[DelayBuffer] hidden video loaded, starting capture, startId:', currentStartId)
+    console.log('[DelayBuffer] hidden video loaded, starting capture, startId:', currentStartId,
+      'size:', hiddenVideo.videoWidth, 'x', hiddenVideo.videoHeight)
     hiddenVideo.play().catch(e => console.warn('[DelayBuffer] play error:', e))
     
     globalState.captureTimeoutId = setTimeout(() => {
@@ -365,14 +378,14 @@ function startBufferGlobal(videoTrack, audioTrack, quality, videoElement) {
           'video/webm',
         ]
         const mimeType = mimeTypes.find(mt => MediaRecorder.isTypeSupported(mt)) || ''
-        const qualityConfig = QUALITY_OPTIONS[quality] || QUALITY_OPTIONS.high
         
-        console.log('[DelayBuffer] mimeType:', mimeType, '화질:', qualityConfig.label)
+        // [advice from AI] 고정 비트레이트 사용 (2Mbps) - 해상도 유지 시 충분, 클라이언트 부하 감소
+        console.log('[DelayBuffer] mimeType:', mimeType, '비트레이트:', FIXED_VIDEO_BITRATE / 1000000, 'Mbps')
         
         const recorder = new MediaRecorder(capturedStream, {
           mimeType,
-          videoBitsPerSecond: qualityConfig.videoBitsPerSecond,
-          audioBitsPerSecond: qualityConfig.audioBitsPerSecond,
+          videoBitsPerSecond: FIXED_VIDEO_BITRATE,
+          audioBitsPerSecond: FIXED_AUDIO_BITRATE,
         })
         globalState.mediaRecorder = recorder
         
@@ -438,14 +451,14 @@ function startBufferGlobal(videoTrack, audioTrack, quality, videoElement) {
               
               // [advice from AI] 버퍼가 충분히 쌓이면 isReady = true
               const bufferHealth = getBufferHealth()
-              if (bufferHealth >= TARGET_DELAY_SECONDS && !globalState.isReady) {
+              if (bufferHealth >= globalState.targetDelay && !globalState.isReady) {
                 globalState.isReady = true
                 notifyStateChange({ isReady: true, isBuffering: false })
                 console.log('[DelayBuffer] 준비 완료, 버퍼:', bufferHealth.toFixed(1), '초')
               }
             }, 500)
             
-            console.log('[DelayBuffer] 버퍼링 시작, 목표 지연:', TARGET_DELAY_SECONDS, '초')
+            console.log('[DelayBuffer] 버퍼링 시작, 목표 지연:', globalState.targetDelay, '초')
             
           } catch (err) {
             console.error('[DelayBuffer] sourceBuffer 생성 실패:', err)
@@ -510,8 +523,9 @@ export function useDelayBuffer() {
     }
   }, [])
   
-  const startBuffer = useCallback((videoTrack, audioTrack, quality = 'high') => {
-    startBufferGlobal(videoTrack, audioTrack, quality, delayedVideoRef.current)
+  // [advice from AI] quality 매개변수 제거, 고정 비트레이트 사용
+  const startBuffer = useCallback((videoTrack, audioTrack, delaySeconds = DEFAULT_DELAY_SECONDS) => {
+    startBufferGlobal(videoTrack, audioTrack, delayedVideoRef.current, delaySeconds)
   }, [])
   
   const play = useCallback(() => {
@@ -521,10 +535,10 @@ export function useDelayBuffer() {
     if (video && sb && sb.buffered.length > 0) {
       // [advice from AI] 재생 시작 시 올바른 지연 위치로 이동
       const bufferEnd = sb.buffered.end(sb.buffered.length - 1)
-      const targetTime = Math.max(0, bufferEnd - TARGET_DELAY_SECONDS)
+      const targetTime = Math.max(0, bufferEnd - globalState.targetDelay)
       
       console.log('[DelayBuffer] 재생 시작, 위치:', targetTime.toFixed(1), 
-        '(버퍼 끝:', bufferEnd.toFixed(1), ')')
+        '(버퍼 끝:', bufferEnd.toFixed(1), ', 지연:', globalState.targetDelay, '초)')
       
       video.currentTime = targetTime
       video.play()

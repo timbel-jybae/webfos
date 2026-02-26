@@ -307,6 +307,53 @@ h1 {
   font-size: 0.9rem;
 }
 
+.role-buttons {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+}
+
+.btn-join {
+  padding: 1rem 2rem;
+  font-size: 1rem;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background 0.2s;
+}
+
+.btn-join.participant {
+  background: #4ade80;
+  color: #000;
+}
+
+.btn-join.participant:hover {
+  background: #22c55e;
+}
+
+.btn-join.reviewer {
+  background: #3b82f6;
+  color: #fff;
+}
+
+.btn-join.reviewer:hover {
+  background: #2563eb;
+}
+
+.btn-join:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* [advice from AI] 선택기 행 (화질, 지연시간) */
+.selector-row {
+  display: flex;
+  gap: 1.5rem;
+  justify-content: center;
+  margin-bottom: 1rem;
+}
+
 /* 반응형 */
 @media (max-width: 600px) {
   .app {
