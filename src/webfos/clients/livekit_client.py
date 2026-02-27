@@ -92,6 +92,40 @@ class LiveKitClient:
         response = await lk_api.ingress.list_ingress(request)
         return list(response.items)
     
+    async def list_rooms(self, names: Optional[list] = None) -> list:
+        """
+        [advice from AI] 룸 목록 조회
+        
+        Args:
+            names: 조회할 룸 이름 목록 (없으면 전체 조회)
+            
+        Returns:
+            list: 룸 정보 목록
+        """
+        from livekit.protocol.room import ListRoomsRequest
+        
+        lk_api = self._get_api()
+        request = ListRoomsRequest(names=names or [])
+        response = await lk_api.room.list_rooms(request)
+        return list(response.rooms)
+    
+    async def list_participants(self, room_name: str) -> list:
+        """
+        [advice from AI] 특정 룸의 참가자 목록 조회
+        
+        Args:
+            room_name: 룸 이름
+            
+        Returns:
+            list: 참가자 정보 목록
+        """
+        from livekit.protocol.room import ListParticipantsRequest
+        
+        lk_api = self._get_api()
+        request = ListParticipantsRequest(room=room_name)
+        response = await lk_api.room.list_participants(request)
+        return list(response.participants)
+    
     async def wait_for_ingress_active(self, ingress_id: str, timeout: int = 10) -> bool:
         """
         Ingress가 활성화될 때까지 대기.

@@ -33,6 +33,17 @@ async def lifespan(app: FastAPI):
     logger.info(f"LiveKit URL: {settings.LIVEKIT_URL}")
     
     from managers.channel_manager import channel_manager
+    from clients.redis_client import redis_client
+    
+    # [advice from AI] Redis 연결 및 초기화
+    try:
+        if await redis_client.connect():
+            deleted = await redis_client.cleanup_all()
+            logger.info(f"Redis 초기화 완료: {deleted}개 키 삭제")
+        else:
+            logger.warning("Redis 연결 실패 - 상태 공유 비활성화")
+    except Exception as e:
+        logger.warning(f"Redis 초기화 실패: {e}")
     
     # 채널 Ingress 병렬 초기화 + Agent dispatch
     try:
@@ -57,6 +68,9 @@ async def lifespan(app: FastAPI):
     # 2. LiveKit 클라이언트 및 로컬 상태 정리
     await livekit_client.close()
     room_manager.clear()
+    
+    # 3. [advice from AI] Redis 연결 종료
+    await redis_client.close()
 
     logger.info("서비스 종료")
 
@@ -80,10 +94,12 @@ app.add_middleware(
 from api.endpoints.health_endpoints import router as health_router
 from api.endpoints.room_endpoints import router as room_router
 from api.endpoints.channel_endpoints import router as channel_router
+from api.endpoints.admin_endpoints import router as admin_router
 
 app.include_router(health_router, prefix="/api", tags=["Health"])
 app.include_router(room_router, prefix="/api", tags=["Room"])
 app.include_router(channel_router, prefix="/api", tags=["Channel"])
+app.include_router(admin_router, prefix="/api", tags=["Admin"])
 
 
 @app.get("/")

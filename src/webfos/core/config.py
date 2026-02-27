@@ -67,6 +67,15 @@ class Settings(BaseSettings):
     # Agent Identity 설정
     AGENT_IDENTITY: str = "room-agent"      # RoomAgent identity
     
+    # === Redis 설정 ===
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+    REDIS_PASSWORD: str = "rDdgtfad3"
+    REDIS_KEY_PREFIX: str = "webfos"        # 키 prefix
+    REDIS_STATE_TTL: int = 3600             # 상태 데이터 TTL (초, 1시간)
+    REDIS_HISTORY_TTL: int = 86400          # 이력 데이터 TTL (초, 24시간)
+    
     @property
     def stt_enabled(self) -> bool:
         """STT 서비스 활성화 여부"""

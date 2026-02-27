@@ -320,18 +320,34 @@ class TurnManager:
         """
         다음 속기사 선택 (라운드 로빈)
         
+        [advice from AI] 리스트 기반 순환:
+        - 현재 보유자의 다음 인덱스 반환
+        - 마지막 인덱스면 0으로 순환
+        - 1명이면 자기 자신 반환
+        
         Args:
-            exclude: 제외할 속기사 ID
+            exclude: 현재 턴 보유자 (다음 사람 찾기 기준점)
             
         Returns:
             다음 속기사 identity
         """
-        for identity in self._stenographer_queue:
-            if identity != exclude:
-                participant = self._participants.get(identity)
-                if participant and participant.is_active:
-                    return identity
-        return None
+        active_stenos = [
+            identity for identity in self._stenographer_queue
+            if self._participants.get(identity) and self._participants[identity].is_active
+        ]
+        
+        if not active_stenos:
+            return None
+        
+        if len(active_stenos) == 1:
+            return active_stenos[0]
+        
+        if exclude and exclude in active_stenos:
+            current_idx = active_stenos.index(exclude)
+            next_idx = (current_idx + 1) % len(active_stenos)
+            return active_stenos[next_idx]
+        
+        return active_stenos[0]
     
     def has_permission(self, identity: str) -> bool:
         """

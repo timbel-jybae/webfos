@@ -29,6 +29,12 @@ from .external_connector import ExternalConnector
 from .models.turn import Turn
 from .models.caption import CaptionSegment, STTResult, OCRResult
 
+# [advice from AI] Redis 클라이언트 (상태 공유용)
+try:
+    from clients.redis_client import redis_client
+except ImportError:
+    redis_client = None
+
 
 class AgentState(Enum):
     """RoomAgent 상태"""
@@ -410,6 +416,12 @@ class RoomAgent:
             await self._broadcast_stenographer_list()
             await self._broadcast_turn_state()
             
+            # [advice from AI] 모든 속기사 퇴장 시 송출 텍스트 리셋
+            remaining_stenos = self.turn_manager.get_stenographers()
+            if not remaining_stenos:
+                self._broadcast_text = ""
+                logger.info("[RoomAgent] 모든 속기사 퇴장, 송출 텍스트 리셋")
+            
             logger.info(f"[RoomAgent] 속기사 퇴장 처리 완료: {identity}")
     
     async def _broadcast_stenographer_list(self) -> None:
@@ -452,6 +464,41 @@ class RoomAgent:
         
         await self._send_raw_message(message)
         logger.info(f"[RoomAgent] 턴 상태 브로드캐스트: holder={current_holder}")
+        
+        # [advice from AI] Redis 상태 동기화
+        await self._sync_to_redis()
+    
+    async def _sync_to_redis(self) -> None:
+        """
+        [advice from AI] Redis에 현재 상태 동기화
+        
+        Admin 대시보드에서 조회할 수 있도록 상태 저장.
+        Redis 연결 실패 시 조용히 무시 (핵심 기능 아님).
+        """
+        if not redis_client or not redis_client.is_connected:
+            return
+        
+        try:
+            stenographers = self.turn_manager.get_stenographers()
+            steno_list = [
+                {
+                    "identity": s.identity,
+                    "text": self._stenographer_texts.get(s.identity, ""),
+                }
+                for s in stenographers
+            ]
+            
+            state = {
+                "stenographers": steno_list,
+                "turn_holder": self.turn_manager.get_current_holder(),
+                "broadcast_text": self._broadcast_text,
+                "updated_at": int(time.time() * 1000),
+            }
+            
+            await redis_client.set_room_state(self.room_name, state)
+            
+        except Exception as e:
+            logger.debug(f"[RoomAgent] Redis 동기화 실패: {e}")
     
     async def _send_raw_message(self, message: dict) -> bool:
         """
@@ -521,13 +568,15 @@ class RoomAgent:
         
         logger.info(f"[RoomAgent] 송출 요청: {sender}, text={text[:50]}...")
         
-        # 1. 송출 텍스트 저장 (중앙 관리)
-        self._broadcast_text = text
+        # 1. 송출 텍스트 누적 저장 (중앙 관리)
+        # [advice from AI] 구분자 없이 append, 줄바꿈/공백은 속기사가 처리
+        self._broadcast_text += text
         
         # 2. 송출 텍스트 브로드캐스트 (모든 참가자에게)
+        # [advice from AI] 누적된 전체 텍스트를 전송
         await self._send_raw_message({
             "type": "caption.broadcast",
-            "text": text,
+            "text": self._broadcast_text,
             "sender": sender,
         })
         
@@ -545,6 +594,20 @@ class RoomAgent:
         
         # 6. 업데이트된 속기사 목록 브로드캐스트 (입력 텍스트 초기화 반영)
         await self._broadcast_stenographer_list()
+        
+        # 7. [advice from AI] Redis에 송출 이력 저장
+        if redis_client and redis_client.is_connected:
+            try:
+                await redis_client.add_broadcast_history(
+                    self.room_name,
+                    {
+                        "text": text,
+                        "sender": sender,
+                        "timestamp": current_ts,
+                    }
+                )
+            except Exception as e:
+                logger.debug(f"[RoomAgent] Redis 이력 저장 실패: {e}")
     
     async def _handle_draft_update(self, sender: str, message: dict) -> None:
         """
@@ -633,6 +696,13 @@ class RoomAgent:
         await self.turn_manager.stop()
         await self.caption_manager.stop()
         await self.external_connector.stop()
+        
+        # [advice from AI] Redis 상태 정리 (이력은 유지)
+        if redis_client and redis_client.is_connected:
+            try:
+                await redis_client.delete_room_state(self.room_name)
+            except Exception as e:
+                logger.debug(f"[RoomAgent] Redis 정리 실패: {e}")
         
         self.room = None
         

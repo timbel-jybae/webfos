@@ -193,22 +193,14 @@ function App() {
   }, [sendData, localIdentity])
 
   // [advice from AI] 송출 버튼 핸들러
+  // 프론트엔드는 수동적 - RoomAgent의 broadcast 응답을 기다림
   const handleBroadcast = useCallback((identity, text) => {
     console.log('[App] 송출 요청:', identity, text)
     
-    // [advice from AI] 발신자 자신의 화면도 즉시 업데이트 (DataChannel은 자신에게 전송 안됨)
-    setBroadcastText(text)
-    setMyText('')
-    
-    // [advice from AI] 다음 턴 홀더로 전환 (자신이 아닌 다른 속기사)
-    const nextHolder = stenographers.find(s => s.identity !== localIdentity)?.identity
-    if (nextHolder) {
-      setCurrentTurnHolder(nextHolder)
-      console.log('[App] 턴 전환 (로컬):', nextHolder)
-    }
-    
+    // 백엔드로 송출 요청만 전송
+    // 모든 상태 업데이트는 RoomAgent의 broadcast 응답에서 처리
     sendData({ type: 'caption.broadcast', text })
-  }, [sendData, stenographers, localIdentity])
+  }, [sendData])
 
   // ===== 연결된 상태 — 검수자 뷰 =====
   // [advice from AI] 검수자: 지연 영상 + 자막 검수용 (추후 구현)
