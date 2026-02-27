@@ -35,11 +35,8 @@ try:
 except ImportError:
     redis_client = None
 
-# [advice from AI] STT 연결 (aiohttp 기반으로 변경)
-try:
-    from .stt_connector import STTConnector
-except ImportError:
-    STTConnector = None
+# [advice from AI] STT 연결 (조건부 import - 크래시 방지)
+STTConnector = None
 
 from core.config import settings
 
@@ -152,6 +149,7 @@ class RoomAgent:
         self._stt_connector: Optional["STTConnector"] = None
         self._has_ingress_audio: bool = False  # Ingress 오디오 트랙 존재 여부
         self._stt_stream_task: Optional[asyncio.Task] = None  # STT 스트림 태스크
+        self._stt_last_final_text: str = ""  # 마지막으로 전송한 final 텍스트 (중복 방지)
         
         self._setup_turn_callbacks()
         self._setup_caption_callbacks()
@@ -213,66 +211,133 @@ class RoomAgent:
         # [advice from AI] 실제 커넥터 생성은 _get_or_create_stt_connector에서 수행
         logger.info(f"[RoomAgent] STT 설정 준비됨 (lazy): {settings.STT_MODEL}")
     
-    def _get_or_create_stt_connector(self) -> Optional["STTConnector"]:
+    def _get_or_create_stt_connector(self):
         """
-        [advice from AI] STT Connector lazy 생성
+        [advice from AI] STT Connector lazy 생성 및 lazy import
+        
+        STTConnector import 자체가 LiveKit SDK와 충돌할 수 있으므로
+        실제 필요 시점에만 import
         """
         if self._stt_connector:
             return self._stt_connector
         
-        if not STTConnector or not settings.STT_ENABLED:
+        if not settings.STT_ENABLED:
+            logger.info("[RoomAgent] STT 비활성화 (config)")
             return None
         
-        self._stt_connector = STTConnector(
-            model=settings.STT_MODEL,
-            language=settings.STT_LANGUAGE,
-            use_vad=True,
-            on_partial=self._on_stt_partial,
-            on_final=self._on_stt_final,
-        )
+        # [advice from AI] Lazy import - 실제 사용 시점에만 import
+        try:
+            from .stt_connector import STTConnector as STTConnectorClass
+            logger.info("[RoomAgent] STTConnector import 성공")
+        except ImportError as e:
+            logger.error(f"[RoomAgent] STTConnector import 실패: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"[RoomAgent] STTConnector import 예외: {e}")
+            return None
         
-        logger.info(f"[RoomAgent] STT Connector 생성: {settings.STT_MODEL}")
-        return self._stt_connector
+        try:
+            self._stt_connector = STTConnectorClass(
+                model=settings.STT_MODEL,
+                language=settings.STT_LANGUAGE,
+                use_vad=True,
+                on_partial=self._on_stt_partial,
+                on_final=self._on_stt_final,
+            )
+            logger.info(f"[RoomAgent] STT Connector 생성: {settings.STT_MODEL}")
+            return self._stt_connector
+        except Exception as e:
+            logger.error(f"[RoomAgent] STT Connector 생성 예외: {e}")
+            return None
+    
+    def _extract_new_text(self, current_text: str, previous_text: str) -> str:
+        """
+        [advice from AI] 이전 텍스트와 비교하여 새로운 부분만 추출
+        
+        WhisperLive는 전체 컨텍스트를 반환하므로, 이전에 이미 전송한 부분을 제외하고
+        새롭게 추가된 부분만 추출합니다.
+        
+        Args:
+            current_text: 현재 받은 전체 텍스트
+            previous_text: 이전에 전송한 텍스트
+        
+        Returns:
+            새로운 부분 텍스트
+        """
+        if not previous_text:
+            return current_text
+        
+        # 이전 텍스트가 현재 텍스트의 시작 부분에 포함되어 있는지 확인
+        if current_text.startswith(previous_text):
+            new_part = current_text[len(previous_text):].strip()
+            return new_part
+        
+        # 이전 텍스트의 끝부분이 현재 텍스트에 포함되어 있는지 확인 (오버랩 감지)
+        for i in range(len(previous_text), 0, -1):
+            suffix = previous_text[-i:]
+            if current_text.startswith(suffix):
+                new_part = current_text[i:].strip()
+                return new_part
+        
+        # 전혀 다른 텍스트면 그대로 반환
+        return current_text
     
     async def _on_stt_partial(self, text: str, segments: list) -> None:
         """
         [advice from AI] STT 파셜 결과 콜백
         
-        파셜 텍스트를 모든 참가자에게 broadcast
+        파셜 텍스트를 모든 참가자에게 broadcast.
+        이전 final 이후의 새로운 부분만 전송합니다.
         
         Args:
-            text: 파셜 텍스트
+            text: 파셜 텍스트 (전체 컨텍스트)
             segments: WhisperLive 세그먼트 리스트
         """
-        self._stt_partial_text = text
+        # [advice from AI] 새로운 부분만 추출
+        new_text = self._extract_new_text(text, self._stt_last_final_text)
+        
+        if not new_text:
+            return  # 새로운 텍스트가 없으면 전송 안 함
+        
+        self._stt_partial_text = new_text
         
         await self._send_raw_message({
             "type": "stt.partial",
-            "text": text,
+            "text": new_text,
             "timestamp": self.get_current_timestamp(),
         })
         
-        logger.debug(f"[RoomAgent] STT partial: {text[:50]}...")
+        logger.debug(f"[RoomAgent] STT partial: {new_text[:50]}...")
     
     async def _on_stt_final(self, text: str, segments: list) -> None:
         """
         [advice from AI] STT 최종 결과 콜백
         
-        최종 텍스트를 모든 참가자에게 broadcast
+        최종 텍스트를 모든 참가자에게 broadcast.
+        이전 final 이후의 새로운 부분만 전송하고, 마지막 final 텍스트를 갱신합니다.
         
         Args:
-            text: 최종 텍스트
+            text: 최종 텍스트 (전체 컨텍스트)
             segments: WhisperLive 세그먼트 리스트
         """
+        # [advice from AI] 새로운 부분만 추출
+        new_text = self._extract_new_text(text, self._stt_last_final_text)
+        
+        if not new_text:
+            return  # 새로운 텍스트가 없으면 전송 안 함
+        
         self._stt_partial_text = ""
         
         await self._send_raw_message({
             "type": "stt.final",
-            "text": text,
+            "text": new_text,
             "timestamp": self.get_current_timestamp(),
         })
         
-        logger.info(f"[RoomAgent] STT final: {text[:50]}...")
+        # [advice from AI] 마지막 final 텍스트 갱신 (중복 방지)
+        self._stt_last_final_text = text
+        
+        logger.info(f"[RoomAgent] STT final: {new_text[:50]}...")
     
     async def start_stt(self) -> bool:
         """
@@ -292,6 +357,7 @@ class RoomAgent:
         success = await self._stt_connector.connect()
         if success:
             self._stt_enabled = True
+            self._stt_last_final_text = ""  # 새 세션 시작 시 리셋
             logger.info("[RoomAgent] STT 시작됨")
         
         return success
@@ -306,6 +372,7 @@ class RoomAgent:
         await self._stt_connector.disconnect()
         self._stt_enabled = False
         self._stt_partial_text = ""
+        self._stt_last_final_text = ""  # 세션 종료 시 리셋
         logger.info("[RoomAgent] STT 중지됨")
     
     @property
@@ -326,24 +393,155 @@ class RoomAgent:
         
         logger.info("[RoomAgent] 오디오 트랙 STT 처리 시작")
         
+        # [advice from AI] 오디오 버퍼링 및 리샘플링 설정
+        audio_buffer = bytearray()
+        target_sample_rate = 16000  # WhisperLive 요구사항
+        buffer_duration_ms = 100    # 100ms 단위로 전송
+        min_rms_threshold = 50      # 무음 필터링 임계값 (0-32768)
+        
+        frame_count = 0
+        source_sample_rate = None
+        
         try:
-            audio_stream = rtc.AudioStream(track)
+            # [advice from AI] rtc.AudioStream 생성을 별도 try-except로 감싸서 안전하게 처리
+            try:
+                audio_stream = rtc.AudioStream(track)
+                logger.info("[RoomAgent] AudioStream 생성 성공")
+            except Exception as stream_err:
+                logger.error(f"[RoomAgent] AudioStream 생성 실패: {stream_err}")
+                await self.stop_stt()
+                return
             
             async for frame_event in audio_stream:
                 if not self._stt_enabled:
                     break
                 
                 frame = frame_event.frame
+                
+                # [advice from AI] 첫 프레임에서 샘플레이트 확인
+                if frame_count == 0:
+                    source_sample_rate = frame.sample_rate
+                    samples_per_channel = frame.samples_per_channel
+                    num_channels = frame.num_channels
+                    logger.info(
+                        f"[RoomAgent] 오디오 프레임 정보: "
+                        f"sample_rate={source_sample_rate}Hz, "
+                        f"channels={num_channels}, "
+                        f"samples={samples_per_channel}"
+                    )
+                
+                frame_count += 1
+                
+                # 오디오 데이터 가져오기
                 audio_data = frame.data.tobytes()
                 
-                await self._stt_connector.send_audio(audio_data)
+                # [advice from AI] 리샘플링 (48kHz → 16kHz)
+                if source_sample_rate and source_sample_rate != target_sample_rate:
+                    audio_data = self._resample_audio(
+                        audio_data, 
+                        source_sample_rate, 
+                        target_sample_rate,
+                        frame.num_channels
+                    )
+                
+                # 버퍼에 추가
+                audio_buffer.extend(audio_data)
+                
+                # [advice from AI] 일정 크기 모이면 전송 (100ms 분량)
+                buffer_size = target_sample_rate * 2 * buffer_duration_ms // 1000  # 16bit mono
+                if len(audio_buffer) >= buffer_size:
+                    chunk = bytes(audio_buffer[:buffer_size])
+                    audio_buffer = audio_buffer[buffer_size:]
+                    
+                    # [advice from AI] 무음 필터링 - RMS 계산
+                    rms = self._calculate_rms(chunk)
+                    if rms > min_rms_threshold:
+                        await self._stt_connector.send_audio(chunk)
+                    # else: 무음 스킵
                 
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.error(f"[RoomAgent] 오디오 스트림 처리 오류: {e}")
         finally:
-            logger.info("[RoomAgent] 오디오 트랙 STT 처리 종료")
+            logger.info(f"[RoomAgent] 오디오 트랙 STT 처리 종료 (총 {frame_count} 프레임)")
+    
+    def _resample_audio(
+        self, 
+        audio_data: bytes, 
+        source_rate: int, 
+        target_rate: int,
+        num_channels: int
+    ) -> bytes:
+        """
+        [advice from AI] 오디오 리샘플링 (간단한 선형 보간)
+        
+        Args:
+            audio_data: PCM16 오디오 바이트
+            source_rate: 원본 샘플레이트
+            target_rate: 목표 샘플레이트
+            num_channels: 채널 수
+        
+        Returns:
+            리샘플링된 PCM16 바이트
+        """
+        import struct
+        import array
+        
+        # int16 샘플로 변환
+        num_samples = len(audio_data) // 2
+        samples = struct.unpack(f'<{num_samples}h', audio_data)
+        
+        # 스테레오면 모노로 변환 (왼쪽+오른쪽 평균)
+        if num_channels == 2:
+            mono_samples = []
+            for i in range(0, len(samples), 2):
+                if i + 1 < len(samples):
+                    mono_samples.append((samples[i] + samples[i + 1]) // 2)
+            samples = mono_samples
+        
+        # 리샘플링 비율
+        ratio = source_rate / target_rate
+        new_length = int(len(samples) / ratio)
+        
+        # 선형 보간으로 리샘플링
+        resampled = array.array('h')
+        for i in range(new_length):
+            src_idx = i * ratio
+            idx = int(src_idx)
+            frac = src_idx - idx
+            
+            if idx + 1 < len(samples):
+                value = int(samples[idx] * (1 - frac) + samples[idx + 1] * frac)
+            else:
+                value = samples[idx] if idx < len(samples) else 0
+            
+            resampled.append(max(-32768, min(32767, value)))
+        
+        return resampled.tobytes()
+    
+    def _calculate_rms(self, audio_data: bytes) -> float:
+        """
+        [advice from AI] 오디오 RMS (Root Mean Square) 계산
+        
+        Args:
+            audio_data: PCM16 오디오 바이트
+        
+        Returns:
+            RMS 값 (0-32768 범위)
+        """
+        import struct
+        import math
+        
+        num_samples = len(audio_data) // 2
+        if num_samples == 0:
+            return 0
+        
+        samples = struct.unpack(f'<{num_samples}h', audio_data)
+        sum_squares = sum(s * s for s in samples)
+        rms = math.sqrt(sum_squares / num_samples)
+        
+        return rms
     
     async def start(
         self,
@@ -585,11 +783,28 @@ class RoomAgent:
             await self._broadcast_stenographer_list()
             await self._broadcast_turn_state()
             
-            # [advice from AI] 모든 속기사 퇴장 시 송출 텍스트 리셋
+            # [advice from AI] 모든 속기사 퇴장 시 송출 텍스트 리셋 및 STT 중지
             remaining_stenos = self.turn_manager.get_stenographers()
             if not remaining_stenos:
                 self._broadcast_text = ""
                 logger.info("[RoomAgent] 모든 속기사 퇴장, 송출 텍스트 리셋")
+                
+                # STT 활성화 상태면 중지
+                if self._stt_enabled:
+                    if self._stt_stream_task:
+                        self._stt_stream_task.cancel()
+                        try:
+                            await self._stt_stream_task
+                        except asyncio.CancelledError:
+                            pass
+                        self._stt_stream_task = None
+                    await self.stop_stt()
+                    await self._send_raw_message({
+                        "type": "stt.status",
+                        "enabled": False,
+                        "message": "all_stenographers_left",
+                    })
+                    logger.info("[RoomAgent] 모든 속기사 퇴장, STT 중지")
             
             logger.info(f"[RoomAgent] 속기사 퇴장 처리 완료: {identity}")
     

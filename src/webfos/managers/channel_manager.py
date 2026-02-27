@@ -52,36 +52,36 @@ class ChannelManager:
                 hls_url="https://cdnlive.wowtv.co.kr/wowtvlive/livestream/playlist.m3u8",
                 description="한국경제TV 실시간 방송",
             ),
-            Channel(
-                id="lotteone",
-                name="롯데원TV",
-                hls_url="https://onetvhlslive.lotteimall.com/lotteonetvlive/lotteonetvlive.mp4.m3u8",
-                description="롯데원TV 실시간 방송",
-            ),
-            Channel(
-                id="cjonstyle",
-                name="CJ온스타일",
-                hls_url="https://live-ch1.cjonstyle.net/cjmalllive/stream2/playlist.m3u8",
-                description="CJ온스타일 실시간 방송",
-            ),
-            Channel(
-                id="ebs2",
-                name="EBS 2TV",
-                hls_url="https://ebsonair.ebs.co.kr/ebs2familypc/familypc1m/playlist.m3u8",
-                description="EBS 2TV 실시간 방송",
-            ),
-            Channel(
-                id="chmbc",
-                name="춘천MBC",
-                hls_url="https://stream.chmbc.co.kr/TV/myStream/playlist.m3u8",
-                description="춘천MBC 실시간 방송",
-            ),
-            Channel(
-                id="knn",
-                name="KNN",
-                hls_url="https://stream1.knn.co.kr/hls/9ly4534y7dm2xfa123r2_tv/index.m3u8",
-                description="KNN 실시간 방송",
-            ),
+            # Channel(
+            #     id="lotteone",
+            #     name="롯데원TV",
+            #     hls_url="https://onetvhlslive.lotteimall.com/lotteonetvlive/lotteonetvlive.mp4.m3u8",
+            #     description="롯데원TV 실시간 방송",
+            # ),
+            # Channel(
+            #     id="cjonstyle",
+            #     name="CJ온스타일",
+            #     hls_url="https://live-ch1.cjonstyle.net/cjmalllive/stream2/playlist.m3u8",
+            #     description="CJ온스타일 실시간 방송",
+            # ),
+            # Channel(
+            #     id="ebs2",
+            #     name="EBS 2TV",
+            #     hls_url="https://ebsonair.ebs.co.kr/ebs2familypc/familypc1m/playlist.m3u8",
+            #     description="EBS 2TV 실시간 방송",
+            # ),
+            # Channel(
+            #     id="chmbc",
+            #     name="춘천MBC",
+            #     hls_url="https://stream.chmbc.co.kr/TV/myStream/playlist.m3u8",
+            #     description="춘천MBC 실시간 방송",
+            # ),
+            # Channel(
+            #     id="knn",
+            #     name="KNN",
+            #     hls_url="https://stream1.knn.co.kr/hls/9ly4534y7dm2xfa123r2_tv/index.m3u8",
+            #     description="KNN 실시간 방송",
+            # ),
         ]
         
         for channel in default_channels:
