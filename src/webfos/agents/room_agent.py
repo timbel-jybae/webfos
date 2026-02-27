@@ -35,6 +35,14 @@ try:
 except ImportError:
     redis_client = None
 
+# [advice from AI] STT 연결 (aiohttp 기반으로 변경)
+try:
+    from .stt_connector import STTConnector
+except ImportError:
+    STTConnector = None
+
+from core.config import settings
+
 
 class AgentState(Enum):
     """RoomAgent 상태"""
@@ -138,9 +146,17 @@ class RoomAgent:
         self._stenographer_texts: Dict[str, str] = {}  # identity -> 현재 입력 텍스트
         self._broadcast_text: str = ""  # 현재 송출된 텍스트
         
+        # [advice from AI] STT 상태 관리
+        self._stt_enabled: bool = False  # STT 활성화 플래그
+        self._stt_partial_text: str = ""  # 파셜 텍스트
+        self._stt_connector: Optional["STTConnector"] = None
+        self._has_ingress_audio: bool = False  # Ingress 오디오 트랙 존재 여부
+        self._stt_stream_task: Optional[asyncio.Task] = None  # STT 스트림 태스크
+        
         self._setup_turn_callbacks()
         self._setup_caption_callbacks()
         self._setup_external_callbacks()
+        self._setup_stt_connector()
         
         logger.info(
             f"[RoomAgent] 초기화: delay={delay_ms}ms, "
@@ -183,6 +199,151 @@ class RoomAgent:
         
         self.external_connector.on_stt_result(on_stt_result)
         self.external_connector.on_ocr_result(on_ocr_result)
+    
+    def _setup_stt_connector(self) -> None:
+        """
+        [advice from AI] STT Connector 설정 (WhisperLive WebSocket API)
+        
+        lazy 초기화: 실제 STT 시작 시점에 생성
+        """
+        if not settings.STT_ENABLED:
+            logger.info("[RoomAgent] STT 비활성화 (config)")
+            return
+        
+        # [advice from AI] 실제 커넥터 생성은 _get_or_create_stt_connector에서 수행
+        logger.info(f"[RoomAgent] STT 설정 준비됨 (lazy): {settings.STT_MODEL}")
+    
+    def _get_or_create_stt_connector(self) -> Optional["STTConnector"]:
+        """
+        [advice from AI] STT Connector lazy 생성
+        """
+        if self._stt_connector:
+            return self._stt_connector
+        
+        if not STTConnector or not settings.STT_ENABLED:
+            return None
+        
+        self._stt_connector = STTConnector(
+            model=settings.STT_MODEL,
+            language=settings.STT_LANGUAGE,
+            use_vad=True,
+            on_partial=self._on_stt_partial,
+            on_final=self._on_stt_final,
+        )
+        
+        logger.info(f"[RoomAgent] STT Connector 생성: {settings.STT_MODEL}")
+        return self._stt_connector
+    
+    async def _on_stt_partial(self, text: str, segments: list) -> None:
+        """
+        [advice from AI] STT 파셜 결과 콜백
+        
+        파셜 텍스트를 모든 참가자에게 broadcast
+        
+        Args:
+            text: 파셜 텍스트
+            segments: WhisperLive 세그먼트 리스트
+        """
+        self._stt_partial_text = text
+        
+        await self._send_raw_message({
+            "type": "stt.partial",
+            "text": text,
+            "timestamp": self.get_current_timestamp(),
+        })
+        
+        logger.debug(f"[RoomAgent] STT partial: {text[:50]}...")
+    
+    async def _on_stt_final(self, text: str, segments: list) -> None:
+        """
+        [advice from AI] STT 최종 결과 콜백
+        
+        최종 텍스트를 모든 참가자에게 broadcast
+        
+        Args:
+            text: 최종 텍스트
+            segments: WhisperLive 세그먼트 리스트
+        """
+        self._stt_partial_text = ""
+        
+        await self._send_raw_message({
+            "type": "stt.final",
+            "text": text,
+            "timestamp": self.get_current_timestamp(),
+        })
+        
+        logger.info(f"[RoomAgent] STT final: {text[:50]}...")
+    
+    async def start_stt(self) -> bool:
+        """
+        [advice from AI] STT 시작
+        
+        Returns:
+            성공 여부
+        """
+        if not self._stt_connector:
+            logger.warning("[RoomAgent] STT Connector 없음")
+            return False
+        
+        if self._stt_enabled:
+            logger.warning("[RoomAgent] STT 이미 실행 중")
+            return True
+        
+        success = await self._stt_connector.connect()
+        if success:
+            self._stt_enabled = True
+            logger.info("[RoomAgent] STT 시작됨")
+        
+        return success
+    
+    async def stop_stt(self) -> None:
+        """
+        [advice from AI] STT 중지
+        """
+        if not self._stt_connector:
+            return
+        
+        await self._stt_connector.disconnect()
+        self._stt_enabled = False
+        self._stt_partial_text = ""
+        logger.info("[RoomAgent] STT 중지됨")
+    
+    @property
+    def stt_enabled(self) -> bool:
+        """STT 활성화 여부"""
+        return self._stt_enabled
+    
+    async def _start_stt_with_audio_track(self, track: "rtc.Track") -> None:
+        """
+        [advice from AI] 오디오 트랙과 함께 STT 시작
+        
+        Args:
+            track: LiveKit 오디오 트랙
+        """
+        if not await self.start_stt():
+            logger.error("[RoomAgent] STT 시작 실패")
+            return
+        
+        logger.info("[RoomAgent] 오디오 트랙 STT 처리 시작")
+        
+        try:
+            audio_stream = rtc.AudioStream(track)
+            
+            async for frame_event in audio_stream:
+                if not self._stt_enabled:
+                    break
+                
+                frame = frame_event.frame
+                audio_data = frame.data.tobytes()
+                
+                await self._stt_connector.send_audio(audio_data)
+                
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"[RoomAgent] 오디오 스트림 처리 오류: {e}")
+        finally:
+            logger.info("[RoomAgent] 오디오 트랙 STT 처리 종료")
     
     async def start(
         self,
@@ -228,6 +389,14 @@ class RoomAgent:
                 f"[RoomAgent] 트랙 구독: {participant.identity} "
                 f"{track.kind} (room={self.room_name})"
             )
+            
+            # [advice from AI] Ingress 오디오 트랙 감지 플래그 설정
+            if (
+                participant.identity == self.INGRESS_IDENTITY
+                and track.kind == rtc.TrackKind.KIND_AUDIO
+            ):
+                self._has_ingress_audio = True
+                logger.info("[RoomAgent] Ingress 오디오 트랙 감지됨")
         
         @self.room.on("track_unsubscribed")
         def on_track_unsubscribed(
@@ -545,6 +714,12 @@ class RoomAgent:
             elif msg_type == "state.request":
                 # [advice from AI] 클라이언트가 현재 상태 요청 (초기 연결 시 메시지 손실 방지)
                 await self._handle_state_request(sender)
+            elif msg_type == "stt.start":
+                # [advice from AI] STT 시작 요청
+                await self._handle_stt_start(sender)
+            elif msg_type == "stt.stop":
+                # [advice from AI] STT 중지 요청
+                await self._handle_stt_stop(sender)
             else:
                 logger.debug(f"[RoomAgent] 알 수 없는 메시지 타입: {msg_type}")
                 
@@ -649,6 +824,102 @@ class RoomAgent:
                 "text": self._broadcast_text,
                 "sender": "system",
             })
+        
+        # 4. STT 상태 전송
+        await self._send_raw_message({
+            "type": "stt.status",
+            "enabled": self._stt_enabled,
+        })
+    
+    def _get_ingress_audio_track(self) -> Optional["rtc.Track"]:
+        """
+        [advice from AI] Ingress 오디오 트랙 찾기
+        
+        Room의 참가자 목록에서 Ingress의 오디오 트랙을 찾아 반환.
+        트랙 객체를 저장하지 않고 필요할 때마다 찾는 방식으로 크래시 방지.
+        """
+        if not self.room:
+            return None
+        
+        for participant in self.room.remote_participants.values():
+            if participant.identity == self.INGRESS_IDENTITY:
+                for publication in participant.track_publications.values():
+                    if (
+                        publication.track 
+                        and publication.track.kind == rtc.TrackKind.KIND_AUDIO
+                    ):
+                        return publication.track
+        return None
+    
+    async def _handle_stt_start(self, sender: str) -> None:
+        """
+        [advice from AI] STT 시작 요청 처리
+        """
+        logger.info(f"[RoomAgent] STT 시작 요청: {sender}")
+        
+        if self._stt_enabled:
+            logger.warning("[RoomAgent] STT 이미 실행 중")
+            await self._send_raw_message({
+                "type": "stt.status",
+                "enabled": True,
+                "message": "already_running",
+            })
+            return
+        
+        # [advice from AI] 동적으로 트랙 찾기 (저장된 참조 대신)
+        audio_track = self._get_ingress_audio_track()
+        if not audio_track:
+            logger.warning("[RoomAgent] Ingress 오디오 트랙 없음")
+            await self._send_raw_message({
+                "type": "stt.status",
+                "enabled": False,
+                "message": "no_audio_track",
+            })
+            return
+        
+        # [advice from AI] lazy 생성: STT 시작 시점에 커넥터 생성
+        connector = self._get_or_create_stt_connector()
+        if not connector:
+            logger.warning("[RoomAgent] STT Connector 생성 실패")
+            await self._send_raw_message({
+                "type": "stt.status",
+                "enabled": False,
+                "message": "stt_disabled",
+            })
+            return
+        
+        # STT 시작
+        self._stt_stream_task = asyncio.create_task(
+            self._start_stt_with_audio_track(audio_track)
+        )
+        
+        await self._send_raw_message({
+            "type": "stt.status",
+            "enabled": True,
+            "message": "started",
+        })
+    
+    async def _handle_stt_stop(self, sender: str) -> None:
+        """
+        [advice from AI] STT 중지 요청 처리
+        """
+        logger.info(f"[RoomAgent] STT 중지 요청: {sender}")
+        
+        if self._stt_stream_task:
+            self._stt_stream_task.cancel()
+            try:
+                await self._stt_stream_task
+            except asyncio.CancelledError:
+                pass
+            self._stt_stream_task = None
+        
+        await self.stop_stt()
+        
+        await self._send_raw_message({
+            "type": "stt.status",
+            "enabled": False,
+            "message": "stopped",
+        })
     
     async def start_turn(self, holder_identity: str) -> Optional[Turn]:
         """
@@ -691,6 +962,9 @@ class RoomAgent:
         logger.info(f"[RoomAgent] 중지: room={self.room_name}")
         
         self.state = AgentState.SHUTTING_DOWN
+        
+        # [advice from AI] STT 정리
+        await self.stop_stt()
         
         await self.message_handler.stop()
         await self.turn_manager.stop()

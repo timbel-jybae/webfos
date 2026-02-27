@@ -35,6 +35,10 @@ function App() {
   const [currentTurnHolder, setCurrentTurnHolder] = useState(null)
   const [broadcastText, setBroadcastText] = useState('')
   const [myText, setMyText] = useState('')  // 내 입력 텍스트 (로컬 관리)
+  
+  // [advice from AI] STT 상태
+  const [sttEnabled, setSttEnabled] = useState(false)
+  const [sttPartialText, setSttPartialText] = useState('')
 
   const isReviewer = currentRole === 'reviewer'
 
@@ -112,6 +116,33 @@ function App() {
             ))
           }
           break
+        
+        // [advice from AI] STT 결과 수신 → 텍스트 입력창에 append
+        case 'stt.partial':
+          setSttPartialText(message.text || '')
+          console.log('[App] STT partial:', message.text?.substring(0, 50))
+          break
+          
+        case 'stt.final':
+          // [advice from AI] 최종 결과를 내 텍스트에 append
+          if (message.text) {
+            setMyText(prev => prev + message.text)
+            // 속기사 목록에도 반영
+            setStenographers(prev => prev.map(s =>
+              s.identity === localIdentity
+                ? { ...s, text: s.text + message.text }
+                : s
+            ))
+          }
+          setSttPartialText('')  // 파셜 클리어
+          console.log('[App] STT final appended:', message.text?.substring(0, 50))
+          break
+          
+        case 'stt.status':
+          // [advice from AI] STT 상태 업데이트
+          setSttEnabled(message.enabled || false)
+          console.log('[App] STT status:', message.enabled, message.message)
+          break
           
         default:
           console.log('[App] 알 수 없는 메시지 타입:', message.type)
@@ -170,7 +201,18 @@ function App() {
     setCurrentTurnHolder(null)
     setBroadcastText('')
     setMyText('')
+    setSttEnabled(false)
+    setSttPartialText('')
   }, [disconnect])
+
+  // [advice from AI] STT 토글 핸들러
+  const handleSttToggle = useCallback(() => {
+    if (sttEnabled) {
+      sendData({ type: 'stt.stop' })
+    } else {
+      sendData({ type: 'stt.start' })
+    }
+  }, [sttEnabled, sendData])
 
   // [advice from AI] 속기사 텍스트 변경 핸들러
   const handleTextChange = useCallback((identity, text) => {
@@ -258,6 +300,12 @@ function App() {
           <button className="btn-audio" onClick={startAudio}>
             🔊 오디오 시작
           </button>
+          <button 
+            className={`btn-stt ${sttEnabled ? 'active' : ''}`} 
+            onClick={handleSttToggle}
+          >
+            {sttEnabled ? '🎤 STT 중지' : '🎤 STT 시작'}
+          </button>
           <button className="btn-disconnect" onClick={handleDisconnect}>
             연결 해제
           </button>
@@ -295,6 +343,18 @@ function App() {
           {/* 우측: 송출 텍스트 패널 */}
           <div className="broadcast-section">
             <BroadcastPanel text={broadcastText} />
+            
+            {/* [advice from AI] STT 실시간 결과 표시 (파셜만 - final은 입력창에 자동 추가) */}
+            {sttEnabled && (
+              <div className="stt-section">
+                <h4>🎤 STT 실시간</h4>
+                {sttPartialText ? (
+                  <p className="stt-partial">{sttPartialText}</p>
+                ) : (
+                  <p className="stt-empty">음성 인식 대기...</p>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>

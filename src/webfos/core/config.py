@@ -57,12 +57,18 @@ class Settings(BaseSettings):
     AGENT_CAPTION_SYNC_INTERVAL_MS: int = 500  # 검수자 자막 동기화 간격 (밀리초)
     
     # 외부 연동 설정 (ExternalConnector)
-    STT_SERVICE_URL: str = ""               # STT 서비스 URL (빈 문자열이면 비활성화)
-    STT_SERVICE_TIMEOUT: float = 5.0        # STT 서비스 타임아웃 (초)
+    STT_SERVICE_URL: str = ""               # STT 서비스 URL (빈 문자열이면 비활성화) - 레거시
+    STT_SERVICE_TIMEOUT: float = 5.0        # STT 서비스 타임아웃 (초) - 레거시
     OCR_SERVICE_URL: str = ""               # OCR 서비스 URL (빈 문자열이면 비활성화)
     OCR_SERVICE_TIMEOUT: float = 5.0        # OCR 서비스 타임아웃 (초)
     BROADCAST_OUTPUT_URL: str = ""          # 방송국 전송 URL (빈 문자열이면 비활성화)
     BROADCAST_OUTPUT_TIMEOUT: float = 10.0  # 방송국 전송 타임아웃 (초)
+    
+    # === STT 설정 (WhisperLive WebSocket API) ===
+    STT_ENABLED: bool = True                            # STT 활성화 여부
+    STT_WS_URL: str = "ws://192.168.1.249:30010"        # WhisperLive WebSocket URL (호스트:30010 → 컨테이너:9090)
+    STT_MODEL: str = "Systran/faster-whisper-large-v3"  # STT 모델
+    STT_LANGUAGE: str = "ko"                            # 언어 코드
     
     # Agent Identity 설정
     AGENT_IDENTITY: str = "room-agent"      # RoomAgent identity

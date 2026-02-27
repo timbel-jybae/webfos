@@ -432,6 +432,35 @@ h1 {
   background: #2563eb;
 }
 
+.btn-stt {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8rem;
+  background: #6b7280;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-left: 0.5rem;
+}
+
+.btn-stt:hover {
+  background: #4b5563;
+}
+
+.btn-stt.active {
+  background: #10b981;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.btn-stt.active:hover {
+  background: #059669;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
 .btn-disconnect {
   padding: 0.3rem 0.75rem;
   font-size: 0.8rem;
@@ -493,10 +522,51 @@ h1 {
 .broadcast-section {
   flex: 1;
   display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 
 .broadcast-section .broadcast-panel {
   flex: 1;
+}
+
+/* [advice from AI] STT 결과 섹션 */
+.stt-section {
+  background: #1a1a2e;
+  border-radius: 4px;
+  padding: 0.75rem;
+  color: #fff;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.stt-section h4 {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.85rem;
+  color: #a5d6a7;
+  border-bottom: 1px solid #333;
+  padding-bottom: 0.25rem;
+}
+
+.stt-section .stt-partial {
+  color: #90caf9;
+  font-style: italic;
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.stt-section .stt-final {
+  color: #fff;
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.stt-section .stt-empty {
+  color: #666;
+  font-size: 0.85rem;
+  margin: 0;
 }
 
 /* 반응형 */
