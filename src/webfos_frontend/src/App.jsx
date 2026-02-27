@@ -11,7 +11,7 @@
  * - 참가자: VideoPlayer 사용 (실시간 재생)
  */
 
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useLiveKit } from './hooks/useLiveKit'
 import { VideoPlayer } from './components/VideoPlayer'
 import { DelayedPlayer } from './components/DelayedPlayer'
@@ -38,7 +38,13 @@ function App() {
   
   // [advice from AI] STT 상태
   const [sttEnabled, setSttEnabled] = useState(false)
-  const [sttPartialText, setSttPartialText] = useState('')
+  const [sttPartialText, setSttPartialText] = useState('')  // 레거시 호환
+  
+  // [advice from AI] STT 편집 모드 상태
+  const [editMode, setEditMode] = useState(false)           // 편집 모드 여부 (UI 렌더링용)
+  const editModeRef = useRef(false)                         // [advice from AI] 편집 모드 ref (콜백에서 최신값 참조용)
+  const [sttConfirmedText, setSttConfirmedText] = useState('')  // 확정된 STT 텍스트
+  const [sttTypingText, setSttTypingText] = useState('')    // 입력 중 STT 텍스트
 
   const isReviewer = currentRole === 'reviewer'
 
@@ -143,6 +149,29 @@ function App() {
           setSttEnabled(message.enabled || false)
           console.log('[App] STT status:', message.enabled, message.message)
           break
+        
+        case 'stt.text':
+          // [advice from AI] RoomAgent가 타이핑하는 것처럼 텍스트 상태 수신
+          // 편집 모드가 아닐 때만 업데이트 (ref 사용으로 항상 최신값 참조)
+          if (!editModeRef.current) {
+            setSttConfirmedText(message.confirmed || '')
+            setSttTypingText(message.typing || '')
+            // myText도 동기화 (확정 + 입력 중)
+            setMyText((message.confirmed || '') + (message.typing || ''))
+            // 속기사 목록에도 반영
+            setStenographers(prev => prev.map(s =>
+              s.identity === localIdentity
+                ? { ...s, text: (message.confirmed || '') + (message.typing || '') }
+                : s
+            ))
+          }
+          console.log('[App] STT text:', message.confirmed?.length, message.typing?.length, 'editMode:', editModeRef.current)
+          break
+        
+        case 'edit.status':
+          // [advice from AI] 편집 모드 상태 업데이트 (다른 속기사가 편집 중인지)
+          console.log('[App] Edit status:', message.editing, message.editor)
+          break
           
         default:
           console.log('[App] 알 수 없는 메시지 타입:', message.type)
@@ -160,7 +189,7 @@ function App() {
       clearTimeout(requestTimer)
       unsubscribe()
     }
-  }, [isConnected, isReviewer, onDataReceived, localIdentity, sendData])
+  }, [isConnected, isReviewer, onDataReceived, localIdentity, sendData])  // [advice from AI] editMode 제거 - ref 사용으로 의존성 불필요
 
   const loadChannels = async () => {
     setLoading(true)
@@ -242,6 +271,27 @@ function App() {
     // 백엔드로 송출 요청만 전송
     // 모든 상태 업데이트는 RoomAgent의 broadcast 응답에서 처리
     sendData({ type: 'caption.broadcast', text })
+  }, [sendData])
+  
+  // [advice from AI] 편집 모드 시작 핸들러 (포커스 시)
+  const handleEditStart = useCallback(() => {
+    if (!sttEnabled) return  // STT가 꺼져있으면 편집 모드 의미 없음
+    if (editModeRef.current) return  // 이미 편집 모드면 무시
+    
+    console.log('[App] 편집 모드 시작')
+    editModeRef.current = true  // [advice from AI] ref 먼저 업데이트 (동기적)
+    setEditMode(true)           // state 업데이트 (UI 렌더링용)
+    sendData({ type: 'edit.start' })
+  }, [sttEnabled, sendData])
+  
+  // [advice from AI] 편집 모드 종료 핸들러 (F2 키 입력 시)
+  const handleEditEnd = useCallback((editedText) => {
+    if (!editModeRef.current) return  // ref로 체크 (최신값)
+    
+    console.log('[App] 편집 모드 종료, 텍스트 병합 요청:', editedText?.length)
+    editModeRef.current = false  // [advice from AI] ref 먼저 업데이트 (동기적)
+    setEditMode(false)           // state 업데이트 (UI 렌더링용)
+    sendData({ type: 'edit.end', text: editedText })
   }, [sendData])
 
   // ===== 연결된 상태 — 검수자 뷰 =====
@@ -333,8 +383,11 @@ function App() {
                   text={isMyPanel ? myText : steno.text}
                   isMyPanel={isMyPanel}
                   hasTurn={steno.identity === activeTurnHolder}
+                  editMode={isMyPanel && editMode}
                   onTextChange={(text) => handleTextChange(steno.identity, text)}
                   onBroadcast={(text) => handleBroadcast(steno.identity, text)}
+                  onEditStart={handleEditStart}
+                  onEditEnd={handleEditEnd}
                 />
               )
             })}

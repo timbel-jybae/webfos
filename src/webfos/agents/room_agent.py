@@ -145,11 +145,20 @@ class RoomAgent:
         
         # [advice from AI] STT 상태 관리
         self._stt_enabled: bool = False  # STT 활성화 플래그
-        self._stt_partial_text: str = ""  # 파셜 텍스트
+        self._stt_partial_text: str = ""  # 파셜 텍스트 (레거시, 하위 호환용)
         self._stt_connector: Optional["STTConnector"] = None
         self._has_ingress_audio: bool = False  # Ingress 오디오 트랙 존재 여부
         self._stt_stream_task: Optional[asyncio.Task] = None  # STT 스트림 태스크
         self._stt_last_final_text: str = ""  # 마지막으로 전송한 final 텍스트 (중복 방지)
+        
+        # [advice from AI] STT 텍스트 상태 관리 (RoomAgent가 직접 타이핑하는 것처럼)
+        self._stt_confirmed_text: str = ""  # 확정된 텍스트 (final)
+        self._stt_typing_text: str = ""     # 현재 입력 중 텍스트 (partial)
+        
+        # [advice from AI] 편집 모드 상태 관리
+        self._edit_mode: bool = False       # 편집 모드 여부
+        self._editor_identity: str = ""     # 현재 편집 중인 속기사 identity
+        self._stt_temp_buffer: str = ""     # 편집 중 STT 임시 저장 버퍼
         
         self._setup_turn_callbacks()
         self._setup_caption_callbacks()
@@ -286,8 +295,8 @@ class RoomAgent:
         """
         [advice from AI] STT 파셜 결과 콜백
         
-        파셜 텍스트를 모든 참가자에게 broadcast.
-        이전 final 이후의 새로운 부분만 전송합니다.
+        RoomAgent가 직접 타이핑하는 것처럼 텍스트 상태 관리.
+        편집 모드 시 temp_buffer에 저장, 일반 모드 시 broadcast.
         
         Args:
             text: 파셜 텍스트 (전체 컨텍스트)
@@ -297,24 +306,28 @@ class RoomAgent:
         new_text = self._extract_new_text(text, self._stt_last_final_text)
         
         if not new_text:
-            return  # 새로운 텍스트가 없으면 전송 안 함
+            return  # 새로운 텍스트가 없으면 처리 안 함
         
-        self._stt_partial_text = new_text
-        
-        await self._send_raw_message({
-            "type": "stt.partial",
-            "text": new_text,
-            "timestamp": self.get_current_timestamp(),
-        })
-        
-        logger.debug(f"[RoomAgent] STT partial: {new_text[:50]}...")
+        # [advice from AI] 편집 모드 분기
+        if self._edit_mode:
+            # 편집 모드: temp_buffer에만 저장 (broadcast 안 함)
+            # partial은 임시이므로 typing_text만 업데이트
+            self._stt_typing_text = new_text
+            logger.debug(f"[RoomAgent] STT partial (편집 모드, temp): {new_text[:50]}...")
+        else:
+            # 일반 모드: 텍스트 상태 업데이트 및 broadcast
+            self._stt_typing_text = new_text
+            self._stt_partial_text = new_text  # 하위 호환
+            
+            await self._broadcast_stt_text()
+            logger.debug(f"[RoomAgent] STT partial: {new_text[:50]}...")
     
     async def _on_stt_final(self, text: str, segments: list) -> None:
         """
         [advice from AI] STT 최종 결과 콜백
         
-        최종 텍스트를 모든 참가자에게 broadcast.
-        이전 final 이후의 새로운 부분만 전송하고, 마지막 final 텍스트를 갱신합니다.
+        RoomAgent가 직접 타이핑하는 것처럼 텍스트 상태 관리.
+        편집 모드 시 temp_buffer에 누적, 일반 모드 시 확정 텍스트에 추가 후 broadcast.
         
         Args:
             text: 최종 텍스트 (전체 컨텍스트)
@@ -324,20 +337,48 @@ class RoomAgent:
         new_text = self._extract_new_text(text, self._stt_last_final_text)
         
         if not new_text:
-            return  # 새로운 텍스트가 없으면 전송 안 함
+            return  # 새로운 텍스트가 없으면 처리 안 함
         
-        self._stt_partial_text = ""
+        # [advice from AI] 편집 모드 분기
+        if self._edit_mode:
+            # 편집 모드: temp_buffer에 누적 (broadcast 안 함)
+            self._stt_temp_buffer += new_text
+            self._stt_typing_text = ""  # typing 초기화
+            logger.info(f"[RoomAgent] STT final (편집 모드, temp): {new_text[:50]}...")
+        else:
+            # 일반 모드: 확정 텍스트에 추가 및 broadcast
+            self._stt_confirmed_text += new_text
+            self._stt_typing_text = ""
+            self._stt_partial_text = ""  # 하위 호환
+            
+            await self._broadcast_stt_text()
+            logger.info(f"[RoomAgent] STT final: {new_text[:50]}...")
         
+        # [advice from AI] 마지막 final 텍스트 갱신 (중복 방지) - 모드와 관계없이
+        self._stt_last_final_text = text
+    
+    async def _broadcast_stt_text(self) -> None:
+        """
+        [advice from AI] STT 텍스트 상태 브로드캐스트
+        
+        RoomAgent가 관리하는 확정 텍스트와 입력 중 텍스트를 모든 참가자에게 전송.
+        프론트엔드는 이를 받아서 텍스트 입력란에 표시.
+        
+        메시지 형식:
+        { type: 'stt.text', confirmed: '확정 텍스트', typing: '입력 중 텍스트' }
+        """
         await self._send_raw_message({
-            "type": "stt.final",
-            "text": new_text,
+            "type": "stt.text",
+            "confirmed": self._stt_confirmed_text,
+            "typing": self._stt_typing_text,
             "timestamp": self.get_current_timestamp(),
         })
         
-        # [advice from AI] 마지막 final 텍스트 갱신 (중복 방지)
-        self._stt_last_final_text = text
-        
-        logger.info(f"[RoomAgent] STT final: {new_text[:50]}...")
+        logger.debug(
+            f"[RoomAgent] STT 텍스트 브로드캐스트: "
+            f"confirmed={len(self._stt_confirmed_text)}자, "
+            f"typing={len(self._stt_typing_text)}자"
+        )
     
     async def start_stt(self) -> bool:
         """
@@ -358,6 +399,12 @@ class RoomAgent:
         if success:
             self._stt_enabled = True
             self._stt_last_final_text = ""  # 새 세션 시작 시 리셋
+            # [advice from AI] 새 세션 시작 시 텍스트 상태 초기화
+            self._stt_confirmed_text = ""
+            self._stt_typing_text = ""
+            self._stt_temp_buffer = ""
+            self._edit_mode = False
+            self._editor_identity = ""
             logger.info("[RoomAgent] STT 시작됨")
         
         return success
@@ -373,6 +420,12 @@ class RoomAgent:
         self._stt_enabled = False
         self._stt_partial_text = ""
         self._stt_last_final_text = ""  # 세션 종료 시 리셋
+        # [advice from AI] 세션 종료 시 텍스트 상태 초기화
+        self._stt_confirmed_text = ""
+        self._stt_typing_text = ""
+        self._stt_temp_buffer = ""
+        self._edit_mode = False
+        self._editor_identity = ""
         logger.info("[RoomAgent] STT 중지됨")
     
     @property
@@ -935,6 +988,12 @@ class RoomAgent:
             elif msg_type == "stt.stop":
                 # [advice from AI] STT 중지 요청
                 await self._handle_stt_stop(sender)
+            elif msg_type == "edit.start":
+                # [advice from AI] 편집 모드 시작 요청
+                await self._handle_edit_start(sender)
+            elif msg_type == "edit.end":
+                # [advice from AI] 편집 모드 종료 및 병합 요청
+                await self._handle_edit_end(sender, message)
             else:
                 logger.debug(f"[RoomAgent] 알 수 없는 메시지 타입: {msg_type}")
                 
@@ -1135,6 +1194,90 @@ class RoomAgent:
             "enabled": False,
             "message": "stopped",
         })
+    
+    async def _handle_edit_start(self, sender: str) -> None:
+        """
+        [advice from AI] 편집 모드 시작 요청 처리
+        
+        속기사가 텍스트 입력란에 포커스하면 편집 모드 진입.
+        편집 모드 동안 STT 텍스트는 temp_buffer에 저장되고 broadcast되지 않음.
+        
+        Args:
+            sender: 편집 시작한 속기사 identity
+        """
+        # [advice from AI] 이미 다른 사람이 편집 중이면 무시
+        if self._edit_mode and self._editor_identity != sender:
+            logger.warning(
+                f"[RoomAgent] 편집 모드 시작 거부: 이미 {self._editor_identity}가 편집 중"
+            )
+            return
+        
+        self._edit_mode = True
+        self._editor_identity = sender
+        # temp_buffer는 초기화하지 않음 (이전 편집 세션의 잔여 데이터 방지는 edit_end에서)
+        
+        logger.info(f"[RoomAgent] 편집 모드 시작: {sender}")
+        
+        # 편집 모드 상태 브로드캐스트
+        await self._send_raw_message({
+            "type": "edit.status",
+            "editing": True,
+            "editor": sender,
+        })
+    
+    async def _handle_edit_end(self, sender: str, message: dict) -> None:
+        """
+        [advice from AI] 편집 모드 종료 및 병합 처리
+        
+        속기사가 F2 등 특정 키를 누르면 편집 완료.
+        편집된 텍스트 뒤에 temp_buffer를 붙여서 병합.
+        
+        Args:
+            sender: 편집 종료한 속기사 identity
+            message: { type: 'edit.end', text: '편집된 텍스트' }
+        """
+        # [advice from AI] 편집 모드가 아니거나 다른 사람이 편집 중이면 무시
+        if not self._edit_mode:
+            logger.warning(f"[RoomAgent] 편집 모드 종료 거부: 편집 모드 아님")
+            return
+        
+        if self._editor_identity != sender:
+            logger.warning(
+                f"[RoomAgent] 편집 모드 종료 거부: {sender}는 편집자({self._editor_identity})가 아님"
+            )
+            return
+        
+        edited_text = message.get("text", "")
+        
+        # 1. 병합: 편집된 텍스트 + temp_buffer
+        merged_text = edited_text + self._stt_temp_buffer
+        
+        logger.info(
+            f"[RoomAgent] 편집 완료 및 병합: "
+            f"edited={len(edited_text)}자, temp={len(self._stt_temp_buffer)}자, "
+            f"merged={len(merged_text)}자"
+        )
+        
+        # 2. temp_buffer 초기화
+        self._stt_temp_buffer = ""
+        
+        # 3. 편집 모드 해제
+        self._edit_mode = False
+        self._editor_identity = ""
+        
+        # 4. 확정 텍스트 갱신 (병합된 텍스트로)
+        self._stt_confirmed_text = merged_text
+        self._stt_typing_text = ""
+        
+        # 5. 편집 모드 종료 상태 브로드캐스트
+        await self._send_raw_message({
+            "type": "edit.status",
+            "editing": False,
+            "editor": "",
+        })
+        
+        # 6. 병합된 텍스트 브로드캐스트 (STT 텍스트 상태)
+        await self._broadcast_stt_text()
     
     async def start_turn(self, holder_identity: str) -> Optional[Turn]:
         """
