@@ -43,6 +43,7 @@ function App() {
   // [advice from AI] STT 편집 모드 상태
   const [editMode, setEditMode] = useState(false)           // 편집 모드 여부 (UI 렌더링용)
   const editModeRef = useRef(false)                         // [advice from AI] 편집 모드 ref (콜백에서 최신값 참조용)
+  const currentTurnHolderRef = useRef(null)                 // [advice from AI] 턴 보유자 ref (콜백에서 최신값 참조용)
   const [sttConfirmedText, setSttConfirmedText] = useState('')  // 확정된 STT 텍스트
   const [sttTypingText, setSttTypingText] = useState('')    // 입력 중 STT 텍스트
 
@@ -99,7 +100,19 @@ function App() {
         case 'turn.grant':
         case 'turn.switch':
           // 턴 권한 변경
+          currentTurnHolderRef.current = message.holder  // [advice from AI] ref 먼저 업데이트 (동기적)
           setCurrentTurnHolder(message.holder)
+          
+          // [advice from AI] 내가 새 턴 보유자가 되면 텍스트/편집 상태 초기화
+          // 이전 턴 보유자의 STT 텍스트가 넘어오지 않도록 깨끗한 상태에서 시작
+          if (message.holder === localIdentity) {
+            setMyText('')
+            editModeRef.current = false
+            setEditMode(false)
+            setSttConfirmedText('')
+            setSttTypingText('')
+            console.log('[App] 내가 새 턴 보유자 - 텍스트/편집 상태 초기화')
+          }
           console.log('[App] 턴 보유자 변경:', message.holder)
           break
           
@@ -151,8 +164,8 @@ function App() {
           break
         
         case 'stt.text':
-          // [advice from AI] RoomAgent가 타이핑하는 것처럼 텍스트 상태 수신
-          // 편집 모드가 아닐 때만 업데이트 (ref 사용으로 항상 최신값 참조)
+          // [advice from AI] RoomAgent가 턴 보유자에게만 전송하는 STT 텍스트 수신
+          // 편집 모드가 아닐 때만 업데이트 (편집 중이면 STT 텍스트 무시)
           if (!editModeRef.current) {
             setSttConfirmedText(message.confirmed || '')
             setSttTypingText(message.typing || '')
@@ -227,11 +240,16 @@ function App() {
     setSelectedChannel(null)
     setCurrentRole(null)
     setStenographers([])
+    currentTurnHolderRef.current = null  // [advice from AI] ref 초기화
     setCurrentTurnHolder(null)
     setBroadcastText('')
     setMyText('')
     setSttEnabled(false)
     setSttPartialText('')
+    editModeRef.current = false  // [advice from AI] ref 초기화
+    setEditMode(false)
+    setSttConfirmedText('')
+    setSttTypingText('')
   }, [disconnect])
 
   // [advice from AI] STT 토글 핸들러

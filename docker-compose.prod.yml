@@ -1,0 +1,51 @@
+# Webfos 프로덕션 환경 Override
+#
+# 실행: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# 배포 전 준비:
+#   1. .env.docker.prod 파일의 CHANGE_ME 값을 실제 값으로 교체
+#   2. livekit/config/livekit.prod.yaml의 CHANGE_ME 값을 실제 값으로 교체
+
+services:
+
+  # ── LiveKit (prod) ──
+  livekit:
+    volumes:
+      - ./livekit/config/livekit.prod.yaml:/etc/livekit.yaml:ro
+
+  # ── Backend API (prod) ──
+  webfos-api:
+    build:
+      target: prod
+    env_file:
+      - .env.docker.prod
+    environment:
+      - DEBUG=false
+      - RELOAD=false
+      - WORKERS=4
+      - LOG_LEVEL=INFO
+
+  # ── Agent Worker (prod) ──
+  webfos-worker:
+    build:
+      target: prod
+    env_file:
+      - .env.docker.prod
+    command: ["python", "-m", "agents.room_agent_worker", "start"]
+    environment:
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+
+  # ── Frontend (prod) ──
+  webfos-frontend:
+    build:
+      target: prod
+    ports:
+      - "80:80"
+
+  # ── Admin (prod) ──
+  webfos-admin:
+    build:
+      target: prod
+    ports:
+      - "81:81"

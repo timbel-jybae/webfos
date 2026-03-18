@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:api.ncloud-docs.com)",
+      "Bash(xargs grep:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:dev-sngwn.github.io)",
+      "WebFetch(domain:www.ncloud.com)",
+      "WebFetch(domain:guide.ncloud-docs.com)",
+      "WebFetch(domain:docs.livekit.io)"
+    ]
+  }
+}

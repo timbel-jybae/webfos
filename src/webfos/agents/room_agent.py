@@ -26,6 +26,10 @@ from .turn_manager import TurnManager
 from .message_handler import MessageHandler
 from .caption_manager import CaptionManager, MergedCaption
 from .external_connector import ExternalConnector
+from .stt_handler import STTHandler
+from .participant_handler import ParticipantHandler
+from .message_dispatcher import MessageDispatcher
+from .frontend_handler import FrontendHandler
 from .models.turn import Turn
 from .models.caption import CaptionSegment, STTResult, OCRResult
 
@@ -143,22 +147,68 @@ class RoomAgent:
         self._stenographer_texts: Dict[str, str] = {}  # identity -> 현재 입력 텍스트
         self._broadcast_text: str = ""  # 현재 송출된 텍스트
         
-        # [advice from AI] STT 상태 관리
-        self._stt_enabled: bool = False  # STT 활성화 플래그
-        self._stt_partial_text: str = ""  # 파셜 텍스트 (레거시, 하위 호환용)
-        self._stt_connector: Optional["STTConnector"] = None
-        self._has_ingress_audio: bool = False  # Ingress 오디오 트랙 존재 여부
-        self._stt_stream_task: Optional[asyncio.Task] = None  # STT 스트림 태스크
-        self._stt_last_final_text: str = ""  # 마지막으로 전송한 final 텍스트 (중복 방지)
+        # [advice from AI] STT 처리 핸들러 (Phase 1 리팩토링)
+        self.stt_handler = STTHandler(
+            get_current_holder=lambda: self.turn_manager.get_current_holder(),
+            send_to_participant=self._send_to_participant,
+            get_current_timestamp=self.get_current_timestamp,
+        )
         
-        # [advice from AI] STT 텍스트 상태 관리 (RoomAgent가 직접 타이핑하는 것처럼)
-        self._stt_confirmed_text: str = ""  # 확정된 텍스트 (final)
-        self._stt_typing_text: str = ""     # 현재 입력 중 텍스트 (partial)
+        # [advice from AI] Ingress 오디오 트랙 관련 (STTHandler 외부 관리)
+        self._has_ingress_audio: bool = False
+        self._stt_stream_task: Optional[asyncio.Task] = None
         
-        # [advice from AI] 편집 모드 상태 관리
-        self._edit_mode: bool = False       # 편집 모드 여부
-        self._editor_identity: str = ""     # 현재 편집 중인 속기사 identity
-        self._stt_temp_buffer: str = ""     # 편집 중 STT 임시 저장 버퍼
+        # [advice from AI] 메시지 전송 핸들러 (Phase 3 리팩토링)
+        self.message_dispatcher = MessageDispatcher(
+            get_room=lambda: self.room,
+            get_room_name=lambda: self.room_name,
+            turn_manager=self.turn_manager,
+            get_stenographer_texts=lambda: self._stenographer_texts,
+            get_broadcast_text=lambda: self._broadcast_text,
+        )
+        
+        # [advice from AI] 참가자 관리 핸들러 (Phase 2 리팩토링)
+        self.participant_handler = ParticipantHandler(
+            turn_manager=self.turn_manager,
+            get_stenographer_texts=lambda: self._stenographer_texts,
+            set_stenographer_text=lambda k, v: self._stenographer_texts.__setitem__(k, v),
+            remove_stenographer_text=lambda k: self._stenographer_texts.pop(k, None),
+            send_raw_message=self._send_raw_message,
+            broadcast_turn_state=self._broadcast_turn_state,
+            start_turn=self.start_turn,
+            get_current_timestamp=self.get_current_timestamp,
+            get_broadcast_text=lambda: self._broadcast_text,
+            set_broadcast_text=lambda v: setattr(self, '_broadcast_text', v),
+            stop_stt=self.stop_stt,
+            get_stt_enabled=lambda: self.stt_enabled,
+            cancel_stt_stream_task=self._cancel_stt_stream_task,
+        )
+        
+        # [advice from AI] 프론트엔드 메시지 핸들러 (Phase 4 리팩토링)
+        self.frontend_handler = FrontendHandler(
+            turn_manager=self.turn_manager,
+            external_connector=self.external_connector,
+            stt_handler=self.stt_handler,
+            get_room_name=lambda: self.room_name,
+            get_stenographer_texts=lambda: self._stenographer_texts,
+            set_stenographer_text=lambda k, v: self._stenographer_texts.__setitem__(k, v),
+            get_broadcast_text=lambda: self._broadcast_text,
+            append_broadcast_text=lambda t: setattr(self, '_broadcast_text', self._broadcast_text + t),
+            send_raw_message=self._send_raw_message,
+            broadcast_turn_state=self._broadcast_turn_state,
+            broadcast_stenographer_list=self._broadcast_stenographer_list,
+            broadcast_stt_text=self._broadcast_stt_text,
+            reset_stt_text_state=self._reset_stt_text_state,
+            get_current_timestamp=self.get_current_timestamp,
+            set_turn_switching=self.set_turn_switching,
+            get_stt_enabled=lambda: self.stt_enabled,
+            get_ingress_audio_track=self._get_ingress_audio_track,
+            get_or_create_stt_connector=self._get_or_create_stt_connector,
+            start_stt_with_audio_track=self._start_stt_with_audio_track,
+            stop_stt=self.stop_stt,
+            get_stt_stream_task=lambda: self._stt_stream_task,
+            set_stt_stream_task=lambda t: setattr(self, '_stt_stream_task', t),
+        )
         
         self._setup_turn_callbacks()
         self._setup_caption_callbacks()
@@ -209,392 +259,73 @@ class RoomAgent:
     
     def _setup_stt_connector(self) -> None:
         """
-        [advice from AI] STT Connector 설정 (WhisperLive WebSocket API)
-        
-        lazy 초기화: 실제 STT 시작 시점에 생성
+        [advice from AI] STT Connector 설정 (STTHandler로 위임)
         """
         if not settings.STT_ENABLED:
             logger.info("[RoomAgent] STT 비활성화 (config)")
             return
-        
-        # [advice from AI] 실제 커넥터 생성은 _get_or_create_stt_connector에서 수행
         logger.info(f"[RoomAgent] STT 설정 준비됨 (lazy): {settings.STT_MODEL}")
     
-    def _get_or_create_stt_connector(self):
-        """
-        [advice from AI] STT Connector lazy 생성 및 lazy import
-        
-        STTConnector import 자체가 LiveKit SDK와 충돌할 수 있으므로
-        실제 필요 시점에만 import
-        """
-        if self._stt_connector:
-            return self._stt_connector
-        
-        if not settings.STT_ENABLED:
-            logger.info("[RoomAgent] STT 비활성화 (config)")
-            return None
-        
-        # [advice from AI] Lazy import - 실제 사용 시점에만 import
-        try:
-            from .stt_connector import STTConnector as STTConnectorClass
-            logger.info("[RoomAgent] STTConnector import 성공")
-        except ImportError as e:
-            logger.error(f"[RoomAgent] STTConnector import 실패: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"[RoomAgent] STTConnector import 예외: {e}")
-            return None
-        
-        try:
-            self._stt_connector = STTConnectorClass(
-                model=settings.STT_MODEL,
-                language=settings.STT_LANGUAGE,
-                use_vad=True,
-                on_partial=self._on_stt_partial,
-                on_final=self._on_stt_final,
-            )
-            logger.info(f"[RoomAgent] STT Connector 생성: {settings.STT_MODEL}")
-            return self._stt_connector
-        except Exception as e:
-            logger.error(f"[RoomAgent] STT Connector 생성 예외: {e}")
-            return None
-    
-    def _extract_new_text(self, current_text: str, previous_text: str) -> str:
-        """
-        [advice from AI] 이전 텍스트와 비교하여 새로운 부분만 추출
-        
-        WhisperLive는 전체 컨텍스트를 반환하므로, 이전에 이미 전송한 부분을 제외하고
-        새롭게 추가된 부분만 추출합니다.
-        
-        Args:
-            current_text: 현재 받은 전체 텍스트
-            previous_text: 이전에 전송한 텍스트
-        
-        Returns:
-            새로운 부분 텍스트
-        """
-        if not previous_text:
-            return current_text
-        
-        # 이전 텍스트가 현재 텍스트의 시작 부분에 포함되어 있는지 확인
-        if current_text.startswith(previous_text):
-            new_part = current_text[len(previous_text):].strip()
-            return new_part
-        
-        # 이전 텍스트의 끝부분이 현재 텍스트에 포함되어 있는지 확인 (오버랩 감지)
-        for i in range(len(previous_text), 0, -1):
-            suffix = previous_text[-i:]
-            if current_text.startswith(suffix):
-                new_part = current_text[i:].strip()
-                return new_part
-        
-        # 전혀 다른 텍스트면 그대로 반환
-        return current_text
-    
-    async def _on_stt_partial(self, text: str, segments: list) -> None:
-        """
-        [advice from AI] STT 파셜 결과 콜백
-        
-        RoomAgent가 직접 타이핑하는 것처럼 텍스트 상태 관리.
-        편집 모드 시 temp_buffer에 저장, 일반 모드 시 broadcast.
-        
-        Args:
-            text: 파셜 텍스트 (전체 컨텍스트)
-            segments: WhisperLive 세그먼트 리스트
-        """
-        # [advice from AI] 새로운 부분만 추출
-        new_text = self._extract_new_text(text, self._stt_last_final_text)
-        
-        if not new_text:
-            return  # 새로운 텍스트가 없으면 처리 안 함
-        
-        # [advice from AI] 편집 모드 분기
-        if self._edit_mode:
-            # 편집 모드: temp_buffer에만 저장 (broadcast 안 함)
-            # partial은 임시이므로 typing_text만 업데이트
-            self._stt_typing_text = new_text
-            logger.debug(f"[RoomAgent] STT partial (편집 모드, temp): {new_text[:50]}...")
-        else:
-            # 일반 모드: 텍스트 상태 업데이트 및 broadcast
-            self._stt_typing_text = new_text
-            self._stt_partial_text = new_text  # 하위 호환
-            
-            await self._broadcast_stt_text()
-            logger.debug(f"[RoomAgent] STT partial: {new_text[:50]}...")
-    
-    async def _on_stt_final(self, text: str, segments: list) -> None:
-        """
-        [advice from AI] STT 최종 결과 콜백
-        
-        RoomAgent가 직접 타이핑하는 것처럼 텍스트 상태 관리.
-        편집 모드 시 temp_buffer에 누적, 일반 모드 시 확정 텍스트에 추가 후 broadcast.
-        
-        Args:
-            text: 최종 텍스트 (전체 컨텍스트)
-            segments: WhisperLive 세그먼트 리스트
-        """
-        # [advice from AI] 새로운 부분만 추출
-        new_text = self._extract_new_text(text, self._stt_last_final_text)
-        
-        if not new_text:
-            return  # 새로운 텍스트가 없으면 처리 안 함
-        
-        # [advice from AI] 편집 모드 분기
-        if self._edit_mode:
-            # 편집 모드: temp_buffer에 누적 (broadcast 안 함)
-            self._stt_temp_buffer += new_text
-            self._stt_typing_text = ""  # typing 초기화
-            logger.info(f"[RoomAgent] STT final (편집 모드, temp): {new_text[:50]}...")
-        else:
-            # 일반 모드: 확정 텍스트에 추가 및 broadcast
-            self._stt_confirmed_text += new_text
-            self._stt_typing_text = ""
-            self._stt_partial_text = ""  # 하위 호환
-            
-            await self._broadcast_stt_text()
-            logger.info(f"[RoomAgent] STT final: {new_text[:50]}...")
-        
-        # [advice from AI] 마지막 final 텍스트 갱신 (중복 방지) - 모드와 관계없이
-        self._stt_last_final_text = text
+    # [advice from AI] STT 관련 메서드 - STTHandler로 위임 (Phase 1 리팩토링)
     
     async def _broadcast_stt_text(self) -> None:
-        """
-        [advice from AI] STT 텍스트 상태 브로드캐스트
-        
-        RoomAgent가 관리하는 확정 텍스트와 입력 중 텍스트를 모든 참가자에게 전송.
-        프론트엔드는 이를 받아서 텍스트 입력란에 표시.
-        
-        메시지 형식:
-        { type: 'stt.text', confirmed: '확정 텍스트', typing: '입력 중 텍스트' }
-        """
-        await self._send_raw_message({
-            "type": "stt.text",
-            "confirmed": self._stt_confirmed_text,
-            "typing": self._stt_typing_text,
-            "timestamp": self.get_current_timestamp(),
-        })
-        
-        logger.debug(
-            f"[RoomAgent] STT 텍스트 브로드캐스트: "
-            f"confirmed={len(self._stt_confirmed_text)}자, "
-            f"typing={len(self._stt_typing_text)}자"
-        )
+        """STT 텍스트 브로드캐스트 (STTHandler 위임)"""
+        await self.stt_handler._broadcast_stt_text()
+    
+    async def _reset_stt_text_state(self) -> None:
+        """STT 텍스트 상태 초기화 (STTHandler 위임)"""
+        await self.stt_handler.reset_stt_text_state()
     
     async def start_stt(self) -> bool:
-        """
-        [advice from AI] STT 시작
-        
-        Returns:
-            성공 여부
-        """
-        if not self._stt_connector:
-            logger.warning("[RoomAgent] STT Connector 없음")
-            return False
-        
-        if self._stt_enabled:
-            logger.warning("[RoomAgent] STT 이미 실행 중")
-            return True
-        
-        success = await self._stt_connector.connect()
-        if success:
-            self._stt_enabled = True
-            self._stt_last_final_text = ""  # 새 세션 시작 시 리셋
-            # [advice from AI] 새 세션 시작 시 텍스트 상태 초기화
-            self._stt_confirmed_text = ""
-            self._stt_typing_text = ""
-            self._stt_temp_buffer = ""
-            self._edit_mode = False
-            self._editor_identity = ""
-            logger.info("[RoomAgent] STT 시작됨")
-        
-        return success
+        """STT 시작 (STTHandler 위임)"""
+        return await self.stt_handler.start_stt()
     
     async def stop_stt(self) -> None:
-        """
-        [advice from AI] STT 중지
-        """
-        if not self._stt_connector:
-            return
-        
-        await self._stt_connector.disconnect()
-        self._stt_enabled = False
-        self._stt_partial_text = ""
-        self._stt_last_final_text = ""  # 세션 종료 시 리셋
-        # [advice from AI] 세션 종료 시 텍스트 상태 초기화
-        self._stt_confirmed_text = ""
-        self._stt_typing_text = ""
-        self._stt_temp_buffer = ""
-        self._edit_mode = False
-        self._editor_identity = ""
-        logger.info("[RoomAgent] STT 중지됨")
+        """STT 중지 (STTHandler 위임)"""
+        await self.stt_handler.stop_stt()
     
     @property
     def stt_enabled(self) -> bool:
-        """STT 활성화 여부"""
-        return self._stt_enabled
+        """STT 활성화 여부 (STTHandler 위임)"""
+        return self.stt_handler.stt_enabled
+    
+    def set_turn_switching(self, switching: bool) -> None:
+        """턴 전환 플래그 설정 (STTHandler 위임)"""
+        self.stt_handler.set_turn_switching(switching)
     
     async def _start_stt_with_audio_track(self, track: "rtc.Track") -> None:
-        """
-        [advice from AI] 오디오 트랙과 함께 STT 시작
-        
-        Args:
-            track: LiveKit 오디오 트랙
-        """
-        if not await self.start_stt():
-            logger.error("[RoomAgent] STT 시작 실패")
-            return
-        
-        logger.info("[RoomAgent] 오디오 트랙 STT 처리 시작")
-        
-        # [advice from AI] 오디오 버퍼링 및 리샘플링 설정
-        audio_buffer = bytearray()
-        target_sample_rate = 16000  # WhisperLive 요구사항
-        buffer_duration_ms = 100    # 100ms 단위로 전송
-        min_rms_threshold = 50      # 무음 필터링 임계값 (0-32768)
-        
-        frame_count = 0
-        source_sample_rate = None
-        
-        try:
-            # [advice from AI] rtc.AudioStream 생성을 별도 try-except로 감싸서 안전하게 처리
+        """오디오 트랙과 함께 STT 시작 (STTHandler 위임)"""
+        await self.stt_handler.start_stt_with_audio_track(track)
+    
+    async def _cancel_stt_stream_task(self) -> None:
+        """STT 스트림 태스크 취소"""
+        if self._stt_stream_task:
+            self._stt_stream_task.cancel()
             try:
-                audio_stream = rtc.AudioStream(track)
-                logger.info("[RoomAgent] AudioStream 생성 성공")
-            except Exception as stream_err:
-                logger.error(f"[RoomAgent] AudioStream 생성 실패: {stream_err}")
-                await self.stop_stt()
-                return
-            
-            async for frame_event in audio_stream:
-                if not self._stt_enabled:
-                    break
-                
-                frame = frame_event.frame
-                
-                # [advice from AI] 첫 프레임에서 샘플레이트 확인
-                if frame_count == 0:
-                    source_sample_rate = frame.sample_rate
-                    samples_per_channel = frame.samples_per_channel
-                    num_channels = frame.num_channels
-                    logger.info(
-                        f"[RoomAgent] 오디오 프레임 정보: "
-                        f"sample_rate={source_sample_rate}Hz, "
-                        f"channels={num_channels}, "
-                        f"samples={samples_per_channel}"
-                    )
-                
-                frame_count += 1
-                
-                # 오디오 데이터 가져오기
-                audio_data = frame.data.tobytes()
-                
-                # [advice from AI] 리샘플링 (48kHz → 16kHz)
-                if source_sample_rate and source_sample_rate != target_sample_rate:
-                    audio_data = self._resample_audio(
-                        audio_data, 
-                        source_sample_rate, 
-                        target_sample_rate,
-                        frame.num_channels
-                    )
-                
-                # 버퍼에 추가
-                audio_buffer.extend(audio_data)
-                
-                # [advice from AI] 일정 크기 모이면 전송 (100ms 분량)
-                buffer_size = target_sample_rate * 2 * buffer_duration_ms // 1000  # 16bit mono
-                if len(audio_buffer) >= buffer_size:
-                    chunk = bytes(audio_buffer[:buffer_size])
-                    audio_buffer = audio_buffer[buffer_size:]
-                    
-                    # [advice from AI] 무음 필터링 - RMS 계산
-                    rms = self._calculate_rms(chunk)
-                    if rms > min_rms_threshold:
-                        await self._stt_connector.send_audio(chunk)
-                    # else: 무음 스킵
-                
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error(f"[RoomAgent] 오디오 스트림 처리 오류: {e}")
-        finally:
-            logger.info(f"[RoomAgent] 오디오 트랙 STT 처리 종료 (총 {frame_count} 프레임)")
+                await self._stt_stream_task
+            except asyncio.CancelledError:
+                pass
+            self._stt_stream_task = None
     
-    def _resample_audio(
-        self, 
-        audio_data: bytes, 
-        source_rate: int, 
-        target_rate: int,
-        num_channels: int
-    ) -> bytes:
-        """
-        [advice from AI] 오디오 리샘플링 (간단한 선형 보간)
-        
-        Args:
-            audio_data: PCM16 오디오 바이트
-            source_rate: 원본 샘플레이트
-            target_rate: 목표 샘플레이트
-            num_channels: 채널 수
-        
-        Returns:
-            리샘플링된 PCM16 바이트
-        """
-        import struct
-        import array
-        
-        # int16 샘플로 변환
-        num_samples = len(audio_data) // 2
-        samples = struct.unpack(f'<{num_samples}h', audio_data)
-        
-        # 스테레오면 모노로 변환 (왼쪽+오른쪽 평균)
-        if num_channels == 2:
-            mono_samples = []
-            for i in range(0, len(samples), 2):
-                if i + 1 < len(samples):
-                    mono_samples.append((samples[i] + samples[i + 1]) // 2)
-            samples = mono_samples
-        
-        # 리샘플링 비율
-        ratio = source_rate / target_rate
-        new_length = int(len(samples) / ratio)
-        
-        # 선형 보간으로 리샘플링
-        resampled = array.array('h')
-        for i in range(new_length):
-            src_idx = i * ratio
-            idx = int(src_idx)
-            frac = src_idx - idx
-            
-            if idx + 1 < len(samples):
-                value = int(samples[idx] * (1 - frac) + samples[idx + 1] * frac)
-            else:
-                value = samples[idx] if idx < len(samples) else 0
-            
-            resampled.append(max(-32768, min(32767, value)))
-        
-        return resampled.tobytes()
+    # [advice from AI] 참가자 관리 메서드 - ParticipantHandler로 위임 (Phase 2 리팩토링)
     
-    def _calculate_rms(self, audio_data: bytes) -> float:
-        """
-        [advice from AI] 오디오 RMS (Root Mean Square) 계산
-        
-        Args:
-            audio_data: PCM16 오디오 바이트
-        
-        Returns:
-            RMS 값 (0-32768 범위)
-        """
-        import struct
-        import math
-        
-        num_samples = len(audio_data) // 2
-        if num_samples == 0:
-            return 0
-        
-        samples = struct.unpack(f'<{num_samples}h', audio_data)
-        sum_squares = sum(s * s for s in samples)
-        rms = math.sqrt(sum_squares / num_samples)
-        
-        return rms
+    async def _register_participant(
+        self,
+        participant: "rtc.RemoteParticipant",
+    ) -> None:
+        """참가자 등록 (ParticipantHandler 위임)"""
+        await self.participant_handler.register_participant(participant)
+    
+    async def _unregister_participant(
+        self,
+        participant: "rtc.RemoteParticipant",
+    ) -> None:
+        """참가자 등록 해제 (ParticipantHandler 위임)"""
+        await self.participant_handler.unregister_participant(participant)
+    
+    async def _broadcast_stenographer_list(self) -> None:
+        """속기사 목록 브로드캐스트 (ParticipantHandler 위임)"""
+        await self.participant_handler.broadcast_stenographer_list()
     
     async def start(
         self,
@@ -626,6 +357,14 @@ class RoomAgent:
         self._check_existing_participants()
         
         self.state = AgentState.ACTIVE
+        
+        try:
+            from clients.redis_client import redis_client
+            await redis_client.connect()
+            await self.message_dispatcher.sync_to_redis()
+            logger.info(f"[RoomAgent] Redis 초기 상태 저장 완료: {self.room_name}")
+        except Exception as e:
+            logger.warning(f"[RoomAgent] Redis 초기화 실패 (무시): {e}")
     
     def _setup_event_handlers(self) -> None:
         """Room 이벤트 핸들러 설정"""
@@ -697,421 +436,36 @@ class RoomAgent:
             )
             asyncio.create_task(self._register_participant(participant))
     
-    async def _register_participant(
-        self,
-        participant: "rtc.RemoteParticipant",
-    ) -> None:
-        """
-        참가자 등록
-        
-        participant metadata에서 role 정보를 추출하여 TurnManager에 등록한다.
-        metadata 형식: {"role": "stenographer" | "reviewer", "name": "..."}
-        
-        [advice from AI] 속기사 등록 시:
-        - 속기사 목록 브로드캐스트
-        - 현재 턴이 없으면 첫 번째 속기사에게 턴 부여
-        """
-        identity = participant.identity
-        
-        # [advice from AI] 시스템 참가자 필터링 (ingress, agent 등)
-        if identity == self.INGRESS_IDENTITY:
-            return
-        if identity.startswith("agent-"):
-            logger.debug(f"[RoomAgent] Agent identity 무시: {identity}")
-            return
-        
-        role = "stenographer"
-        name = identity
-        
-        if participant.metadata:
-            try:
-                import json
-                meta = json.loads(participant.metadata)
-                role = meta.get("role", "stenographer")
-                name = meta.get("name", identity)
-            except (json.JSONDecodeError, TypeError):
-                pass
-        
-        success = self.turn_manager.register_participant(identity, role, name)
-        if success:
-            logger.info(
-                f"[RoomAgent] 참가자 등록 완료: {identity} ({role})"
-            )
-            
-            # [advice from AI] 속기사 등록 시 목록 브로드캐스트 및 턴 관리
-            if role == "stenographer":
-                # 텍스트 상태 초기화
-                self._stenographer_texts[identity] = ""
-                
-                await self._broadcast_stenographer_list()
-                
-                # [advice from AI] 송출 권한 로직 개선
-                # 1. 현재 턴 보유자 확인
-                # 2. 턴 보유자가 없거나 유효하지 않으면 (퇴장한 참가자 등)
-                #    -> 현재 등록된 속기사 중 첫 번째에게 턴 부여
-                # 3. 항상 1명은 송출권한을 갖고 있어야 함
-                current_holder = self.turn_manager.get_current_holder()
-                registered_stenos = [s.identity for s in self.turn_manager.get_stenographers()]
-                
-                # 턴 보유자가 유효한지 확인 (현재 등록된 속기사인지)
-                holder_is_valid = current_holder and current_holder in registered_stenos
-                
-                if not holder_is_valid:
-                    # 턴 보유자가 없거나 유효하지 않음 -> 첫 번째 속기사에게 턴 부여
-                    if registered_stenos:
-                        first_steno = registered_stenos[0]
-                        # 기존 턴이 있으면 종료
-                        if self.turn_manager._current_turn:
-                            current_ts = self.get_current_timestamp()
-                            await self.turn_manager.end_turn(current_ts)
-                        
-                        turn = await self.start_turn(first_steno)
-                        if turn:
-                            logger.info(f"[RoomAgent] 송출 권한 부여 (첫 번째 속기사): {first_steno}")
-                        else:
-                            logger.error(f"[RoomAgent] 송출 권한 부여 실패: {first_steno}")
-                else:
-                    # 유효한 턴 보유자 있음
-                    logger.info(f"[RoomAgent] 기존 송출 권한 보유자: {current_holder}")
-                
-                # 모든 참가자에게 현재 턴 상태 브로드캐스트
-                await self._broadcast_turn_state()
-                
-                # 신규 참가자에게 현재 송출 텍스트 전송
-                if self._broadcast_text:
-                    await self._send_raw_message({
-                        "type": "caption.broadcast",
-                        "text": self._broadcast_text,
-                        "sender": "system",
-                    })
-    
-    async def _unregister_participant(
-        self,
-        participant: "rtc.RemoteParticipant",
-    ) -> None:
-        """참가자 등록 해제"""
-        identity = participant.identity
-        
-        # [advice from AI] 시스템 참가자 필터링 (ingress, agent 등)
-        if identity == self.INGRESS_IDENTITY:
-            return
-        if identity.startswith("agent-"):
-            return
-        
-        was_turn_holder = self.turn_manager.get_current_holder() == identity
-        was_stenographer = identity in [
-            p.identity for p in self.turn_manager.get_stenographers()
-        ]
-        
-        # [advice from AI] 먼저 참가자 해제 (중요: 턴 전환 전에 해제해야 퇴장자가 다시 턴을 받지 않음)
-        self.turn_manager.unregister_participant(identity)
-        
-        # [advice from AI] 속기사였으면 텍스트 상태 삭제
-        if was_stenographer:
-            self._stenographer_texts.pop(identity, None)
-        
-        # [advice from AI] 턴 보유자였으면 다음 속기사에게 전환 (참가자 해제 후)
-        if was_turn_holder:
-            current_ts = self.get_current_timestamp()
-            
-            # 먼저 현재 턴 종료 (중요: start_turn은 활성 턴이 있으면 실패함)
-            if self.turn_manager._current_turn and self.turn_manager._current_turn.is_active():
-                await self.turn_manager.end_turn(current_ts)
-                logger.info(f"[RoomAgent] 턴 종료 (퇴장자: {identity})")
-            
-            # 남은 속기사 확인
-            remaining = self.turn_manager.get_stenographers()
-            if remaining:
-                # 남은 속기사 중 첫 번째에게 턴 부여
-                turn = await self.turn_manager.start_turn(remaining[0].identity, current_ts)
-                if turn:
-                    logger.info(f"[RoomAgent] 턴 승계 완료: {remaining[0].identity}")
-                else:
-                    logger.error(f"[RoomAgent] 턴 승계 실패: {remaining[0].identity}")
-            else:
-                logger.info("[RoomAgent] 모든 속기사 퇴장, 턴 종료")
-        
-        # [advice from AI] 속기사였으면 목록/턴 브로드캐스트
-        if was_stenographer:
-            await self._broadcast_stenographer_list()
-            await self._broadcast_turn_state()
-            
-            # [advice from AI] 모든 속기사 퇴장 시 송출 텍스트 리셋 및 STT 중지
-            remaining_stenos = self.turn_manager.get_stenographers()
-            if not remaining_stenos:
-                self._broadcast_text = ""
-                logger.info("[RoomAgent] 모든 속기사 퇴장, 송출 텍스트 리셋")
-                
-                # STT 활성화 상태면 중지
-                if self._stt_enabled:
-                    if self._stt_stream_task:
-                        self._stt_stream_task.cancel()
-                        try:
-                            await self._stt_stream_task
-                        except asyncio.CancelledError:
-                            pass
-                        self._stt_stream_task = None
-                    await self.stop_stt()
-                    await self._send_raw_message({
-                        "type": "stt.status",
-                        "enabled": False,
-                        "message": "all_stenographers_left",
-                    })
-                    logger.info("[RoomAgent] 모든 속기사 퇴장, STT 중지")
-            
-            logger.info(f"[RoomAgent] 속기사 퇴장 처리 완료: {identity}")
-    
-    async def _broadcast_stenographer_list(self) -> None:
-        """
-        [advice from AI] 속기사 목록 브로드캐스트 (현재 텍스트 상태 포함)
-        
-        프론트엔드에서 사용하는 메시지 형식:
-        { type: 'stenographer.list', stenographers: [{ identity, text }] }
-        """
-        stenographers = self.turn_manager.get_stenographers()
-        steno_list = [
-            {
-                "identity": s.identity, 
-                "text": self._stenographer_texts.get(s.identity, "")
-            } 
-            for s in stenographers
-        ]
-        
-        message = {
-            "type": "stenographer.list",
-            "stenographers": steno_list,
-        }
-        
-        await self._send_raw_message(message)
-        logger.info(f"[RoomAgent] 속기사 목록 브로드캐스트: {len(steno_list)}명")
+    # [advice from AI] 메시지 전송 메서드 - MessageDispatcher로 위임 (Phase 3 리팩토링)
     
     async def _broadcast_turn_state(self) -> None:
-        """
-        [advice from AI] 현재 턴 상태 브로드캐스트
-        
-        프론트엔드에서 사용하는 메시지 형식:
-        { type: 'turn.grant', holder: 'identity' }
-        """
-        current_holder = self.turn_manager.get_current_holder()
-        
-        message = {
-            "type": "turn.grant",
-            "holder": current_holder,
-        }
-        
-        await self._send_raw_message(message)
-        logger.info(f"[RoomAgent] 턴 상태 브로드캐스트: holder={current_holder}")
-        
-        # [advice from AI] Redis 상태 동기화
-        await self._sync_to_redis()
+        """턴 상태 브로드캐스트 (MessageDispatcher 위임)"""
+        await self.message_dispatcher.broadcast_turn_state()
     
     async def _sync_to_redis(self) -> None:
-        """
-        [advice from AI] Redis에 현재 상태 동기화
-        
-        Admin 대시보드에서 조회할 수 있도록 상태 저장.
-        Redis 연결 실패 시 조용히 무시 (핵심 기능 아님).
-        """
-        if not redis_client or not redis_client.is_connected:
-            return
-        
-        try:
-            stenographers = self.turn_manager.get_stenographers()
-            steno_list = [
-                {
-                    "identity": s.identity,
-                    "text": self._stenographer_texts.get(s.identity, ""),
-                }
-                for s in stenographers
-            ]
-            
-            state = {
-                "stenographers": steno_list,
-                "turn_holder": self.turn_manager.get_current_holder(),
-                "broadcast_text": self._broadcast_text,
-                "updated_at": int(time.time() * 1000),
-            }
-            
-            await redis_client.set_room_state(self.room_name, state)
-            
-        except Exception as e:
-            logger.debug(f"[RoomAgent] Redis 동기화 실패: {e}")
+        """Redis 동기화 (MessageDispatcher 위임)"""
+        await self.message_dispatcher.sync_to_redis()
     
     async def _send_raw_message(self, message: dict) -> bool:
-        """
-        [advice from AI] 프론트엔드 형식의 raw 메시지 전송
-        """
-        if not self.room:
-            logger.warning("[RoomAgent] 메시지 전송 실패: room 없음")
-            return False
-        
-        try:
-            import json
-            data = json.dumps(message).encode()
-            await self.room.local_participant.publish_data(data)
-            logger.debug(f"[RoomAgent] Raw 메시지 전송: {message.get('type')}")
-            return True
-        except Exception as e:
-            logger.error(f"[RoomAgent] 메시지 전송 실패: {e}")
-            return False
+        """브로드캐스트 메시지 전송 (MessageDispatcher 위임)"""
+        return await self.message_dispatcher.send_raw_message(message)
+    
+    async def _send_to_participant(self, message: dict, identity: str) -> bool:
+        """특정 참가자 메시지 전송 (MessageDispatcher 위임)"""
+        return await self.message_dispatcher.send_to_participant(message, identity)
+    
+    # [advice from AI] 프론트엔드 메시지 처리 - FrontendHandler로 위임 (Phase 4 리팩토링)
     
     async def _handle_frontend_message(
         self,
         data: bytes,
         participant: "rtc.RemoteParticipant",
     ) -> None:
-        """
-        [advice from AI] 프론트엔드에서 보내는 메시지 처리
-        
-        메시지 형식:
-        - { type: 'caption.broadcast', text: '...' }: 송출 요청
-        - { type: 'caption.draft', text: '...' }: 임시 텍스트 업데이트
-        """
-        try:
-            import json
-            message = json.loads(data.decode())
-            msg_type = message.get("type")
-            sender = participant.identity
-            
-            logger.debug(f"[RoomAgent] 프론트엔드 메시지: {msg_type} from {sender}")
-            
-            if msg_type == "caption.broadcast":
-                await self._handle_broadcast_request(sender, message)
-            elif msg_type == "caption.draft":
-                await self._handle_draft_update(sender, message)
-            elif msg_type == "state.request":
-                # [advice from AI] 클라이언트가 현재 상태 요청 (초기 연결 시 메시지 손실 방지)
-                await self._handle_state_request(sender)
-            elif msg_type == "stt.start":
-                # [advice from AI] STT 시작 요청
-                await self._handle_stt_start(sender)
-            elif msg_type == "stt.stop":
-                # [advice from AI] STT 중지 요청
-                await self._handle_stt_stop(sender)
-            elif msg_type == "edit.start":
-                # [advice from AI] 편집 모드 시작 요청
-                await self._handle_edit_start(sender)
-            elif msg_type == "edit.end":
-                # [advice from AI] 편집 모드 종료 및 병합 요청
-                await self._handle_edit_end(sender, message)
-            else:
-                logger.debug(f"[RoomAgent] 알 수 없는 메시지 타입: {msg_type}")
-                
-        except json.JSONDecodeError:
-            logger.debug("[RoomAgent] JSON 파싱 실패, MessageHandler로 위임")
-        except Exception as e:
-            logger.error(f"[RoomAgent] 메시지 처리 오류: {e}")
-    
-    async def _handle_broadcast_request(self, sender: str, message: dict) -> None:
-        """
-        [advice from AI] 송출 요청 처리
-        
-        송출 권한이 있는 속기사만 송출 가능.
-        송출 후 다음 속기사에게 턴 전환.
-        """
-        text = message.get("text", "")
-        
-        if not self.turn_manager.has_permission(sender):
-            logger.warning(f"[RoomAgent] 송출 권한 없음: {sender}")
-            return
-        
-        logger.info(f"[RoomAgent] 송출 요청: {sender}, text={text[:50]}...")
-        
-        # 1. 송출 텍스트 누적 저장 (중앙 관리)
-        # [advice from AI] 구분자 없이 append, 줄바꿈/공백은 속기사가 처리
-        self._broadcast_text += text
-        
-        # 2. 송출 텍스트 브로드캐스트 (모든 참가자에게)
-        # [advice from AI] 누적된 전체 텍스트를 전송
-        await self._send_raw_message({
-            "type": "caption.broadcast",
-            "text": self._broadcast_text,
-            "sender": sender,
-        })
-        
-        # 3. 송출자의 입력 텍스트 초기화
-        self._stenographer_texts[sender] = ""
-        
-        # 4. 외부 시스템에 전송 (방송국 등)
-        current_ts = self.get_current_timestamp()
-        await self.external_connector.send_caption_to_broadcast(text, current_ts)
-        
-        # 5. 턴 전환 (다음 속기사에게) - 현재 송출자 제외
-        # [advice from AI] request_turn_switch를 사용하여 현재 보유자를 exclude
-        await self.turn_manager.request_turn_switch(sender, current_ts)
-        await self._broadcast_turn_state()
-        
-        # 6. 업데이트된 속기사 목록 브로드캐스트 (입력 텍스트 초기화 반영)
-        await self._broadcast_stenographer_list()
-        
-        # 7. [advice from AI] Redis에 송출 이력 저장
-        if redis_client and redis_client.is_connected:
-            try:
-                await redis_client.add_broadcast_history(
-                    self.room_name,
-                    {
-                        "text": text,
-                        "sender": sender,
-                        "timestamp": current_ts,
-                    }
-                )
-            except Exception as e:
-                logger.debug(f"[RoomAgent] Redis 이력 저장 실패: {e}")
-    
-    async def _handle_draft_update(self, sender: str, message: dict) -> None:
-        """
-        [advice from AI] 임시 텍스트 업데이트 처리
-        
-        속기사별 텍스트 상태 저장 후 모든 참가자에게 브로드캐스트.
-        """
-        text = message.get("text", "")
-        
-        # 1. 속기사별 텍스트 상태 저장 (중앙 관리)
-        self._stenographer_texts[sender] = text
-        
-        # 2. 모든 참가자에게 재브로드캐스트 (발신자 정보 포함)
-        await self._send_raw_message({
-            "type": "caption.draft",
-            "text": text,
-            "sender": sender,
-        })
-    
-    async def _handle_state_request(self, sender: str) -> None:
-        """
-        [advice from AI] 클라이언트 상태 요청 처리
-        
-        클라이언트가 연결 후 현재 상태를 요청할 때 호출.
-        속기사 목록, 턴 상태, 송출 텍스트를 전송.
-        """
-        logger.info(f"[RoomAgent] 상태 요청: {sender}")
-        
-        # 1. 속기사 목록 전송
-        await self._broadcast_stenographer_list()
-        
-        # 2. 턴 상태 전송
-        await self._broadcast_turn_state()
-        
-        # 3. 송출 텍스트 전송 (있으면)
-        if self._broadcast_text:
-            await self._send_raw_message({
-                "type": "caption.broadcast",
-                "text": self._broadcast_text,
-                "sender": "system",
-            })
-        
-        # 4. STT 상태 전송
-        await self._send_raw_message({
-            "type": "stt.status",
-            "enabled": self._stt_enabled,
-        })
+        """프론트엔드 메시지 처리 (FrontendHandler 위임)"""
+        await self.frontend_handler.handle_message(data, participant)
     
     def _get_ingress_audio_track(self) -> Optional["rtc.Track"]:
-        """
-        [advice from AI] Ingress 오디오 트랙 찾기
-        
-        Room의 참가자 목록에서 Ingress의 오디오 트랙을 찾아 반환.
-        트랙 객체를 저장하지 않고 필요할 때마다 찾는 방식으로 크래시 방지.
-        """
+        """Ingress 오디오 트랙 찾기"""
         if not self.room:
             return None
         
@@ -1125,159 +479,9 @@ class RoomAgent:
                         return publication.track
         return None
     
-    async def _handle_stt_start(self, sender: str) -> None:
-        """
-        [advice from AI] STT 시작 요청 처리
-        """
-        logger.info(f"[RoomAgent] STT 시작 요청: {sender}")
-        
-        if self._stt_enabled:
-            logger.warning("[RoomAgent] STT 이미 실행 중")
-            await self._send_raw_message({
-                "type": "stt.status",
-                "enabled": True,
-                "message": "already_running",
-            })
-            return
-        
-        # [advice from AI] 동적으로 트랙 찾기 (저장된 참조 대신)
-        audio_track = self._get_ingress_audio_track()
-        if not audio_track:
-            logger.warning("[RoomAgent] Ingress 오디오 트랙 없음")
-            await self._send_raw_message({
-                "type": "stt.status",
-                "enabled": False,
-                "message": "no_audio_track",
-            })
-            return
-        
-        # [advice from AI] lazy 생성: STT 시작 시점에 커넥터 생성
-        connector = self._get_or_create_stt_connector()
-        if not connector:
-            logger.warning("[RoomAgent] STT Connector 생성 실패")
-            await self._send_raw_message({
-                "type": "stt.status",
-                "enabled": False,
-                "message": "stt_disabled",
-            })
-            return
-        
-        # STT 시작
-        self._stt_stream_task = asyncio.create_task(
-            self._start_stt_with_audio_track(audio_track)
-        )
-        
-        await self._send_raw_message({
-            "type": "stt.status",
-            "enabled": True,
-            "message": "started",
-        })
-    
-    async def _handle_stt_stop(self, sender: str) -> None:
-        """
-        [advice from AI] STT 중지 요청 처리
-        """
-        logger.info(f"[RoomAgent] STT 중지 요청: {sender}")
-        
-        if self._stt_stream_task:
-            self._stt_stream_task.cancel()
-            try:
-                await self._stt_stream_task
-            except asyncio.CancelledError:
-                pass
-            self._stt_stream_task = None
-        
-        await self.stop_stt()
-        
-        await self._send_raw_message({
-            "type": "stt.status",
-            "enabled": False,
-            "message": "stopped",
-        })
-    
-    async def _handle_edit_start(self, sender: str) -> None:
-        """
-        [advice from AI] 편집 모드 시작 요청 처리
-        
-        속기사가 텍스트 입력란에 포커스하면 편집 모드 진입.
-        편집 모드 동안 STT 텍스트는 temp_buffer에 저장되고 broadcast되지 않음.
-        
-        Args:
-            sender: 편집 시작한 속기사 identity
-        """
-        # [advice from AI] 이미 다른 사람이 편집 중이면 무시
-        if self._edit_mode and self._editor_identity != sender:
-            logger.warning(
-                f"[RoomAgent] 편집 모드 시작 거부: 이미 {self._editor_identity}가 편집 중"
-            )
-            return
-        
-        self._edit_mode = True
-        self._editor_identity = sender
-        # temp_buffer는 초기화하지 않음 (이전 편집 세션의 잔여 데이터 방지는 edit_end에서)
-        
-        logger.info(f"[RoomAgent] 편집 모드 시작: {sender}")
-        
-        # 편집 모드 상태 브로드캐스트
-        await self._send_raw_message({
-            "type": "edit.status",
-            "editing": True,
-            "editor": sender,
-        })
-    
-    async def _handle_edit_end(self, sender: str, message: dict) -> None:
-        """
-        [advice from AI] 편집 모드 종료 및 병합 처리
-        
-        속기사가 F2 등 특정 키를 누르면 편집 완료.
-        편집된 텍스트 뒤에 temp_buffer를 붙여서 병합.
-        
-        Args:
-            sender: 편집 종료한 속기사 identity
-            message: { type: 'edit.end', text: '편집된 텍스트' }
-        """
-        # [advice from AI] 편집 모드가 아니거나 다른 사람이 편집 중이면 무시
-        if not self._edit_mode:
-            logger.warning(f"[RoomAgent] 편집 모드 종료 거부: 편집 모드 아님")
-            return
-        
-        if self._editor_identity != sender:
-            logger.warning(
-                f"[RoomAgent] 편집 모드 종료 거부: {sender}는 편집자({self._editor_identity})가 아님"
-            )
-            return
-        
-        edited_text = message.get("text", "")
-        
-        # 1. 병합: 편집된 텍스트 + temp_buffer
-        merged_text = edited_text + self._stt_temp_buffer
-        
-        logger.info(
-            f"[RoomAgent] 편집 완료 및 병합: "
-            f"edited={len(edited_text)}자, temp={len(self._stt_temp_buffer)}자, "
-            f"merged={len(merged_text)}자"
-        )
-        
-        # 2. temp_buffer 초기화
-        self._stt_temp_buffer = ""
-        
-        # 3. 편집 모드 해제
-        self._edit_mode = False
-        self._editor_identity = ""
-        
-        # 4. 확정 텍스트 갱신 (병합된 텍스트로)
-        self._stt_confirmed_text = merged_text
-        self._stt_typing_text = ""
-        
-        # 5. 편집 모드 종료 상태 브로드캐스트
-        await self._send_raw_message({
-            "type": "edit.status",
-            "editing": False,
-            "editor": "",
-        })
-        
-        # 6. 병합된 텍스트 브로드캐스트 (STT 텍스트 상태)
-        await self._broadcast_stt_text()
+    def _get_or_create_stt_connector(self):
+        """STT Connector lazy 생성 (STTHandler 위임)"""
+        return self.stt_handler._get_or_create_stt_connector()
     
     async def start_turn(self, holder_identity: str) -> Optional[Turn]:
         """

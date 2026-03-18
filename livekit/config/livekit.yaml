@@ -1,0 +1,27 @@
+# LiveKit Server Configuration
+# 참고: https://docs.livekit.io/home/self-hosting/deployment/
+
+port: 7880
+
+redis:
+  address: redis:6379
+  password: rDdgtfad3
+
+rtc:
+  port_range_start: 7881
+  port_range_end: 7882
+  tcp_port: 7882
+  use_external_ip: false
+  node_ip: 127.0.0.1
+  stun_servers: []
+
+# API Key/Secret (프로덕션에서는 반드시 변경)
+keys:
+  devkey: YrXEauQsxbYWPqgZxmdnPo9tRYEpnTV3vxTF/sy89vQ=
+
+logging:
+  level: info
+
+room:
+  empty_timeout: 300
+  max_participants: 100

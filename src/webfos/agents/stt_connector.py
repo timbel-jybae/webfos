@@ -81,6 +81,8 @@ class STTConnector:
         self._receive_task: Optional[asyncio.Task] = None
         
         self._last_text = ""
+        self._send_count = 0
+        self._recv_count = 0
         
     @property
     def state(self) -> STTState:
@@ -198,17 +200,26 @@ class STTConnector:
         logger.info("[STTConnector] 연결 종료")
     
     async def send_audio(self, audio_data: bytes) -> bool:
-        """오디오 데이터 전송 (PCM16 → float32 변환)"""
+        """오디오 데이터 전송 (PCM16 -> float32 변환)"""
         if not self.is_connected or not self._ws:
+            if self._send_count == 0:
+                logger.warning(f"[STTConnector] send_audio 호출되었으나 미연결: state={self._state.value}")
             return False
         
         try:
-            # PCM16 → float32 변환 (numpy 없이)
             num_samples = len(audio_data) // 2
             int16_samples = struct.unpack(f'<{num_samples}h', audio_data)
             float32_samples = array.array('f', [s / 32768.0 for s in int16_samples])
             
             await self._ws.send_bytes(float32_samples.tobytes())
+            self._send_count += 1
+            
+            if self._send_count % 100 == 0:
+                logger.info(
+                    f"[STTConnector] 전송 통계: sent={self._send_count}, "
+                    f"recv={self._recv_count}, state={self._state.value}"
+                )
+            
             return True
             
         except Exception as e:
@@ -220,23 +231,26 @@ class STTConnector:
         if not self._ws:
             return
         
-        logger.debug("[STTConnector] 수신 루프 시작")
+        logger.info("[STTConnector] 수신 루프 시작")
         
         try:
             async for msg in self._ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
-                    logger.debug(f"[STTConnector] 메시지 수신: {msg.data[:100]}")
+                    self._recv_count += 1
+                    logger.debug(f"[STTConnector] 메시지 수신 #{self._recv_count}: {msg.data[:200]}")
                     await self._handle_message(msg.data)
                 elif msg.type == aiohttp.WSMsgType.BINARY:
-                    pass  # 바이너리 무시
+                    pass
                 elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                    logger.warning(f"[STTConnector] WS 종료/에러: type={msg.type}")
                     break
                     
         except asyncio.CancelledError:
-            logger.debug("[STTConnector] 수신 루프 취소됨")
+            logger.info("[STTConnector] 수신 루프 취소됨")
         except Exception as e:
-            logger.error(f"[STTConnector] 수신 오류: {e}")
+            logger.error(f"[STTConnector] 수신 오류: {e}", exc_info=True)
         finally:
+            logger.info(f"[STTConnector] 수신 루프 종료: total_recv={self._recv_count}")
             if self._state != STTState.DISCONNECTED:
                 self._state = STTState.DISCONNECTED
     

@@ -28,6 +28,7 @@ class Settings(BaseSettings):
 
     # === LiveKit 설정 ===
     LIVEKIT_URL: str = "ws://localhost:7880"
+    LIVEKIT_PUBLIC_URL: str = ""
     LIVEKIT_API_KEY: str = ""
     LIVEKIT_API_SECRET: str = ""
     LIVEKIT_TIMEOUT: float = 10.0
@@ -105,8 +106,18 @@ class Settings(BaseSettings):
 
     @property
     def livekit_ws_url(self) -> str:
-        """LiveKit WebSocket URL"""
+        """LiveKit WebSocket URL (서버 간 통신용)"""
         url = self.LIVEKIT_URL
+        if url.startswith("http://"):
+            return url.replace("http://", "ws://")
+        elif url.startswith("https://"):
+            return url.replace("https://", "wss://")
+        return url
+
+    @property
+    def livekit_public_ws_url(self) -> str:
+        """브라우저 클라이언트용 LiveKit WebSocket URL"""
+        url = self.LIVEKIT_PUBLIC_URL or self.LIVEKIT_URL
         if url.startswith("http://"):
             return url.replace("http://", "ws://")
         elif url.startswith("https://"):

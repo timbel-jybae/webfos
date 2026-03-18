@@ -1,0 +1,47 @@
+version: '3.8'
+
+# [DEPRECATED] 이 파일은 더 이상 사용하지 않습니다.
+# 프로젝트 루트의 통합 docker-compose.yml을 사용하세요.
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+networks:
+  redis-net:
+    external: true
+    name: redis_default
+
+services:
+  # [advice from AI] network_mode: host 사용 — Docker 브릿지 네트워크에서 UDP가 내부 IP에만
+  # 바인딩되는 문제를 해결. Ingress와 동일하게 호스트 네트워크 직접 사용.
+  # Redis 접속은 localhost:6379 (호스트 포트 매핑) 사용.
+  livekit:
+    container_name: livekit-server
+    image: livekit/livekit-server:latest
+    environment:
+      LIVEKIT_KEYS: "devkey: YrXEauQsxbYWPqgZxmdnPo9tRYEpnTV3vxTF/sy89vQ="
+    volumes:
+      - ./config/livekit.yaml:/etc/livekit.yaml:ro
+    command: ["--config", "/etc/livekit.yaml"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7880/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    network_mode: host
+    restart: unless-stopped
+
+  # [advice from AI] HLS/RTMP Ingress - Redis로 LiveKit Server와 통신
+  # network_mode: host 사용 시 localhost로 redis/livekit 접근 (호스트 포트 매핑)
+  ingress:
+    container_name: livekit-ingress
+    image: livekit/ingress:latest
+    environment:
+      INGRESS_CONFIG_BODY: |
+        api_key: devkey
+        api_secret: YrXEauQsxbYWPqgZxmdnPo9tRYEpnTV3vxTF/sy89vQ=
+        ws_url: ws://localhost:7880
+        redis:
+          address: localhost:6379
+          password: rDdgtfad3
+    network_mode: host
+    depends_on:
+      - livekit
+    restart: unless-stopped

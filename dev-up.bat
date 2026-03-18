@@ -1,0 +1,6 @@
+@echo off
+echo [webfos] Stopping all containers...
+docker compose -f docker-compose.yml -f docker-compose.dev.yml down
+echo.
+echo [webfos] Building and starting all services (dev)...
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d

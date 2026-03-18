@@ -64,7 +64,7 @@ class RoomService:
         return {
             "channel_id": channel_id,
             "channel_name": channel.name,
-            "ws_url": settings.livekit_ws_url,
+            "ws_url": settings.livekit_public_ws_url,
             "room": room_name,
             "identity": identity,
             "name": name,

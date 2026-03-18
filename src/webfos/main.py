@@ -15,6 +15,7 @@ Agent Worker는 별도 프로세스(agents/room_agent_worker.py)로 실행하며
 Ingress 생성 시 자동으로 Agent가 Room에 dispatch된다.
 """
 
+import asyncio
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,13 +46,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Redis 초기화 실패: {e}")
     
-    # 채널 Ingress 병렬 초기화 + Agent dispatch
-    try:
-        await channel_manager.initialize_all_ingresses(batch_size=5)
-    except Exception as e:
-        logger.error(f"Ingress 초기화 실패: {e}")
+    # 채널 Ingress 병렬 초기화 + Agent dispatch (Worker 등록 대기)
+    async def _delayed_init():
+        logger.info("Worker 등록 대기 (10초)...")
+        await asyncio.sleep(10)
+        try:
+            await channel_manager.initialize_all_ingresses(batch_size=5)
+        except Exception as e:
+            logger.error(f"Ingress 초기화 실패: {e}")
 
-    logger.info("서비스 준비 완료")
+    asyncio.create_task(_delayed_init())
+
+    logger.info("서비스 준비 완료 (Ingress 초기화는 백그라운드에서 진행)")
 
     yield
 

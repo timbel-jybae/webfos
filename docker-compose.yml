@@ -1,0 +1,113 @@
+# Webfos 통합 Docker Compose — 전체 서비스 정의
+#
+# 사용법:
+#   개발:    docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#   프로덕션: docker compose -f docker-compose.yml -f docker-compose.prod.yml up
+
+services:
+
+  # ── Redis ──
+  redis:
+    container_name: webfos-redis
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-rDdgtfad3}"]
+    ports:
+      - "${REDIS_PORT:-16379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-rDdgtfad3}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── LiveKit Server ──
+  livekit:
+    container_name: livekit-server
+    image: livekit/livekit-server:latest
+    ports:
+      - "7880:7880"
+      - "7881-7882:7881-7882/udp"
+      - "7882:7882/tcp"
+    volumes:
+      - ./livekit/config/livekit.yaml:/etc/livekit.yaml:ro
+    command: ["--config", "/etc/livekit.yaml"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7880/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── LiveKit Ingress (HLS/RTMP) ──
+  ingress:
+    container_name: livekit-ingress
+    image: livekit/ingress:latest
+    environment:
+      INGRESS_CONFIG_BODY: |
+        api_key: devkey
+        api_secret: YrXEauQsxbYWPqgZxmdnPo9tRYEpnTV3vxTF/sy89vQ=
+        ws_url: ws://livekit:7880
+        redis:
+          address: redis:6379
+          password: rDdgtfad3
+    depends_on:
+      - livekit
+    restart: unless-stopped
+
+  # ── Backend API ──
+  webfos-api:
+    container_name: webfos-api
+    build:
+      context: ./src/webfos
+      dockerfile: Dockerfile
+    ports:
+      - "${API_PORT:-32055}:32055"
+    env_file:
+      - .env.docker
+    depends_on:
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Agent Worker ──
+  webfos-worker:
+    container_name: webfos-worker
+    build:
+      context: ./src/webfos
+      dockerfile: Dockerfile
+    env_file:
+      - .env.docker
+    depends_on:
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Frontend (사용자) ──
+  webfos-frontend:
+    container_name: webfos-frontend
+    build:
+      context: ./src/webfos_frontend
+      dockerfile: Dockerfile
+    depends_on:
+      - webfos-api
+
+  # ── Admin Dashboard ──
+  webfos-admin:
+    container_name: webfos-admin
+    build:
+      context: ./src/webfos_admin
+      dockerfile: Dockerfile
+    depends_on:
+      - webfos-api
+
+volumes:
+  redis-data:

@@ -1,0 +1,3 @@
+@echo off
+echo [webfos] Rebuilding app services only (api, worker, frontend, admin)...
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build --force-recreate --no-deps webfos-api webfos-worker webfos-frontend webfos-admin

@@ -1,0 +1,65 @@
+# Webfos 개발 환경 Override
+#
+# 실행: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+
+  # ── Backend API (dev) ──
+  webfos-api:
+    build:
+      target: dev
+    volumes:
+      - ./src/webfos:/app
+      - /dev/null:/app/.env
+    environment:
+      - DEBUG=true
+      - RELOAD=true
+      - WORKERS=1
+      - LOG_LEVEL=DEBUG
+
+  # ── Agent Worker (dev) ──
+  # network_mode: host -- Worker의 WebRTC가 node_ip(127.0.0.1)에 접근해야 하므로 호스트 네트워크 사용.
+  # Docker DNS 사용 불가 -> LIVEKIT_URL, REDIS_HOST를 localhost로 override.
+  # 프로덕션(K8s)에서는 불필요 (Pod 네트워크 + use_external_ip: true).
+  webfos-worker:
+    build:
+      target: dev
+    network_mode: host
+    volumes:
+      - ./src/webfos:/app
+      - /dev/null:/app/.env
+    command: ["python", "-m", "agents.room_agent_worker", "dev"]
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+      - LIVEKIT_URL=ws://localhost:7880
+      - REDIS_HOST=localhost
+      - REDIS_PORT=16379
+
+  # ── Frontend (dev) ──
+  webfos-frontend:
+    build:
+      target: dev
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./src/webfos_frontend:/app
+      - /app/node_modules
+    environment:
+      - PORT=5173
+      - API_PROXY_TARGET=http://webfos-api:32055
+      - VITE_API_BASE_URL=http://localhost:32055
+
+  # ── Admin (dev) ──
+  webfos-admin:
+    build:
+      target: dev
+    ports:
+      - "5174:5174"
+    volumes:
+      - ./src/webfos_admin:/app
+      - /app/node_modules
+    environment:
+      - PORT=5174
+      - API_PROXY_TARGET=http://webfos-api:32055
+      - VITE_API_BASE_URL=http://localhost:32055

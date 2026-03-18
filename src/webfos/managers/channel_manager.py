@@ -170,15 +170,25 @@ class ChannelManager:
                 is_active=True
             )
             
-            # [advice from AI] Ingress 생성 후 Agent dispatch
-            try:
-                await livekit_client.dispatch_agent(
-                    room_name=room_name,
-                    agent_name="room-agent",
-                    metadata=f'{{"channel_id": "{channel.id}", "channel_name": "{channel.name}"}}',
-                )
-            except Exception as e:
-                logger.warning(f"[ChannelManager] Agent dispatch 실패 (Worker 미실행?): {channel.id} - {e}")
+            # Ingress 생성 후 Agent dispatch (Worker 등록 대기 포함)
+            dispatch_ok = False
+            for attempt in range(5):
+                try:
+                    await livekit_client.dispatch_agent(
+                        room_name=room_name,
+                        agent_name="room-agent",
+                        metadata=f'{{"channel_id": "{channel.id}", "channel_name": "{channel.name}"}}',
+                    )
+                    dispatch_ok = True
+                    break
+                except Exception as e:
+                    logger.warning(
+                        f"[ChannelManager] Agent dispatch 재시도 {attempt+1}/5: {channel.id} - {e}"
+                    )
+                    await asyncio.sleep(3)
+            
+            if not dispatch_ok:
+                logger.error(f"[ChannelManager] Agent dispatch 최종 실패: {channel.id}")
             
             logger.info(f"[ChannelManager] Ingress 생성: {channel.id} -> {ingress_info.ingress_id}")
             return True

@@ -16,5 +16,11 @@ httpx>=0.24.0
 # Environment
 python-dotenv>=1.0.0
 
+# Redis
+redis>=5.0.0
+
+# WebSocket (WhisperLive STT)
+aiohttp>=3.9.0
+
 # Logging
 loguru>=0.7.0
